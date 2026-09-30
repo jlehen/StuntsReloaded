@@ -33,6 +33,8 @@ export function initUI(app) {
   $('m-car').onclick = () => { show('cars'); renderCars(); app.showroom(true); };
   $('m-opp').onclick = () => { show('opps'); renderOpps(); };
   $('m-track').onclick = () => { show('tracks'); renderTracks(); };
+  $('m-enhanced').checked = app.settings.enhanced;
+  $('m-enhanced').onchange = e => { app.settings.enhanced = e.target.checked; app.save(); };
   $('m-replay').onchange = async e => {
     const f = e.target.files[0];
     if (f) app.startReplay(new Uint8Array(await f.arrayBuffer()));

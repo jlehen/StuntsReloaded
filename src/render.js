@@ -7,6 +7,7 @@ import { call } from './calls.js';
 import { sin_fast as sin, cos_fast as cos, multiply_and_scale as mulScale } from './math.js';
 import { decompress, parseRes, parseShape3d, parsePalette, parseShape2d } from './res.js';
 import { getFile } from './files.js';
+import { addDetail } from './fx.js';
 
 export const ANGLE = Math.PI * 2 / 1024;
 let palette, materialColor, materialPattern;
@@ -36,6 +37,9 @@ const matBase = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading
 const matDecal = matBase.clone(); Object.assign(matDecal, { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -8 });
 const matGlass = matBase.clone(); Object.assign(matGlass, { transparent: true, opacity: 0.45, roughness: 0.2, depthWrite: false });
 const matTerrain = matBase.clone(); Object.assign(matTerrain, { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 });
+for (const m of [matBase, matDecal, matTerrain]) addDetail(m);
+// Car bodies: same look as matBase until enhanced graphics adds a clear coat (fx.js).
+export const matCar = new THREE.MeshPhysicalMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide, roughness: 0.9, metalness: 0 });
 
 // Geometry buckets: accumulate triangles (already transformed) per material kind.
 class Bucket {
@@ -73,9 +77,9 @@ export class Builder {
       }
     }
   }
-  group() {
+  group(base = matBase) {
     const g = new THREE.Group();
-    for (const [k, m] of [['base', matBase], ['decal', matDecal], ['glass', matGlass], ['terrain', matTerrain]]) {
+    for (const [k, m] of [['base', base], ['decal', matDecal], ['glass', matGlass], ['terrain', matTerrain]]) {
       const mesh = this[k].mesh(m);
       if (mesh) g.add(mesh);
     }
@@ -288,7 +292,7 @@ export function buildHorizon(scenery) {
       const c = s.pixels[x + y * s.width];
       if (!c) continue;
       const o = ((h - s.height + y) * 1024 + x0 + x) * 4;
-      img.data.set([...palette[c], 255], o);
+      img.data.set([...palette[c], c === 117 ? 254 : 255], o); // 117: painted sky, cut by alphaTest in enhanced graphics
     }
     x0 += s.width;
   }
@@ -333,7 +337,7 @@ export function buildCar(id, slot = 0) {
   const body = new Builder();
   body.add({ ...car0, prims: car0.prims.filter(p => p.type !== 12) }, scale, slot);
   const g = new THREE.Group();
-  g.add(body.group());
+  g.add(body.group(matCar));
   // car1's wheels are in physics order (rc2 index): match car0's wheels by quadrant.
   const physWheels = car1.prims.filter(p => p.type === 12).map(p => car1.verts[p.idx[0]]);
   g.userData.wheels = car0.prims.filter(p => p.type === 12).map(p => {

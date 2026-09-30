@@ -3,7 +3,8 @@ import { preload, getFile, loadCachedFiles, addUserFiles } from './files.js';
 import { boot, loadTrack, loadReplay, setupRace, step, state, gameconfig, carId, td } from './race.js';
 import { G, M, A, rsw, farptr } from './mem.js';
 import { simd_player } from './structs.js';
-import { THREE, initMaterials, loadShapes, buildTrack, buildCar, carPose, paintColor, buildTruck, buildHorizon, paintHex, animateWheels, animateTrack, buildDebris, updateDebris, buildClouds, buildSigns, updateSigns } from './render.js';
+import { createFx, addDetail } from './fx.js';
+import { THREE, matCar, initMaterials, loadShapes, buildTrack, buildCar, carPose, paintColor, buildTruck, buildHorizon, paintHex, animateWheels, animateTrack, buildDebris, updateDebris, buildClouds, buildSigns, updateSigns } from './render.js';
 import { multiply_and_scale, sin_fast, cos_fast } from './math.js';
 import { callTop } from './calls.js';
 import { bitmap, text } from './art.js';
@@ -61,14 +62,15 @@ const sky = paintColor(17), groundColor = paintColor(16);
 skyScene.background = sky;
 skyScene.add(new THREE.HemisphereLight(0xdde8ff, groundColor, 1.2));
 scene.fog = new THREE.Fog(sky, 12000, 40000);
-scene.add(new THREE.HemisphereLight(0xdde8ff, groundColor, 1.2));
+const hemi = new THREE.HemisphereLight(0xdde8ff, groundColor, 1.2);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff2dd, 2.2);
 sun.castShadow = true;
 sun.shadow.mapSize.set(4096, 4096);
 Object.assign(sun.shadow.camera, { left: -2500, right: 2500, top: 2500, bottom: -2500, near: 100, far: 10000 });
 sun.shadow.bias = -0.0005;
 scene.add(sun, sun.target);
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(200000, 200000), new THREE.MeshStandardMaterial({ color: groundColor, roughness: 1 }));
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(200000, 200000), addDetail(new THREE.MeshStandardMaterial({ color: groundColor, roughness: 1 })));
 ground.rotation.x = -Math.PI / 2;
 ground.position.set(15360, -1, -15360);
 ground.receiveShadow = true;
@@ -82,6 +84,7 @@ const spot = new THREE.DirectionalLight(0xffffff, 2.5); spot.position.set(200, 3
 const floor = new THREE.Mesh(new THREE.CircleGeometry(160, 64), new THREE.MeshStandardMaterial({ color: 0x2a3140, roughness: 0.6 }));
 floor.rotation.x = -Math.PI / 2; showroom.add(floor);
 const showCam = new THREE.PerspectiveCamera(35, 1, 1, 5000);
+const fx = createFx({ renderer, scene, skyScene, camera, sun, hemi, carMaterial: matCar, groundColor });
 let showCar = null, inShowroom = false;
 
 const dash = $('dash');
@@ -89,11 +92,13 @@ function resize() {
   renderer.setSize(innerWidth, innerHeight);
   for (const c of [camera, showCam]) { c.aspect = innerWidth / innerHeight; c.updateProjectionMatrix(); }
   dash.width = innerWidth; dash.height = innerHeight;
+  fx.resize(innerWidth, innerHeight);
 }
 addEventListener('resize', resize);
 
 // --- Settings, tracks, highscores ---------------------------------------------------------
-const settings = Object.assign({ car: 'COUN', paint: 0, manual: false, opponent: 0, oppCar: 'PMIN', track: 'DEFAULT' }, store.get('settings', {}));
+const settings = Object.assign({ car: 'COUN', paint: 0, manual: false, opponent: 0, oppCar: 'PMIN', track: 'DEFAULT', enhanced: false }, store.get('settings', {}));
+fx.enabled = settings.enhanced || params.has('enhanced');
 const tracks = store.get('tracks', {}); // name -> base64 of the 1802-byte .TRK
 const b64 = { enc: u => btoa(String.fromCharCode(...u)), dec: s => Uint8Array.from(atob(s), c => c.charCodeAt(0)) };
 const trackBytes = n => n === 'DEFAULT' || !tracks[n] ? getFile('DEFAULT.TRK') : b64.dec(tracks[n]);
@@ -385,7 +390,7 @@ function updateHud() {
 const oppName = i => { const d = text(`OPP${i}.PRE`, 'edes'); return d[1] || d[0] || `Opponent ${i}`; };
 const app = {
   CARS, settings,
-  save: () => store.set('settings', settings),
+  save: () => { store.set('settings', settings); fx.enabled = settings.enhanced; },
   startRace, startReplay, toMenu,
   carName: c => carNames[c],
   carDescription: c => text(`CAR${c}.RES`, 'edes'),
@@ -483,6 +488,7 @@ function frame(now) {
   sun.position.copy(carObj.position).add(new THREE.Vector3(1500, 3000, 1000));
   sun.target.position.copy(carObj.position);
   horizon.position.copy(camera.position);
+  horizon.material.alphaTest = fx.enabled ? 0.999 : 0;
   clouds.position.set(camera.position.x, 0, camera.position.z);
   if (mode === 'race' || mode === 'replay') updateHud();
   if (mode === 'replay' && document.activeElement !== $('rb-seek')) { $('rb-seek').max = replayFrames; $('rb-seek').value = state.game_frame; }
@@ -496,6 +502,7 @@ function frame(now) {
 // Sky pass (horizon, clouds) then the world with a cleared depth buffer.
 renderer.autoClear = false;
 function renderWorld(cam) {
+  if (fx.enabled && cam === camera) return fx.render();
   renderer.clear();
   renderer.render(skyScene, cam);
   renderer.clearDepth();
@@ -509,7 +516,7 @@ else toMenu();
 $('status').textContent = '';
 // Debugging/testing handle (tools/browse.mjs): stunts.ff(n) runs n ticks at once.
 window.stunts = {
-  app, state, G, getFile, scene,
+  app, state, G, getFile, scene, fx,
   get mode() { return mode; },
   ff(n) { for (let i = 0; i < n && mode !== 'results'; i++) { tick(); advancePoses(); } return state.game_frame; },
   // Height of the rendered track under each physics wheel contact point (should match wheel y).
