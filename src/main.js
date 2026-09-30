@@ -86,7 +86,7 @@ const spot = new THREE.DirectionalLight(0xffffff, 2.5); spot.position.set(200, 3
 const floor = new THREE.Mesh(new THREE.CircleGeometry(160, 64), new THREE.MeshStandardMaterial({ color: 0x2a3140, roughness: 0.6 }));
 floor.rotation.x = -Math.PI / 2; showroom.add(floor);
 const showCam = new THREE.PerspectiveCamera(35, 1, 1, 5000);
-const fx = createFx({ renderer, scene, skyScene, camera, sun, hemi, carMaterial: matCar, groundColor });
+const fx = createFx({ renderer, scene, skyScene, camera, sun, hemi, carMaterial: matCar, ground, groundColor });
 let showCar = null, inShowroom = false;
 
 const dash = $('dash');
@@ -121,6 +121,7 @@ function rebuildScene() {
   scene.add(debris);
   trackGroup = buildTrack(shapes);
   horizon = buildHorizon(M[td('td14_elem_map_main') + 900] % 5);
+  fx.setScenery(M[td('td14_elem_map_main') + 900] % 5);
   carObj = buildCar(carId(gameconfig.game_playercarid), gameconfig.game_playermaterial);
   scene.add(trackGroup, carObj);
   skyScene.add(horizon);
@@ -490,7 +491,7 @@ function frame(now) {
   sun.position.copy(carObj.position).add(new THREE.Vector3(1500, 3000, 1000));
   sun.target.position.copy(carObj.position);
   horizon.position.copy(camera.position);
-  horizon.material.alphaTest = fx.enabled ? 0.999 : 0;
+  horizon.visible = !fx.enabled;
   clouds.position.set(camera.position.x, 0, camera.position.z);
   if (mode === 'race' || mode === 'replay') updateHud();
   if (mode === 'replay' && document.activeElement !== $('rb-seek')) { $('rb-seek').max = replayFrames; $('rb-seek').value = state.game_frame; }

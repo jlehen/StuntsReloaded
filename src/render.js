@@ -294,7 +294,7 @@ export function buildHorizon(scenery) {
       const c = s.pixels[x + y * s.width];
       if (!c) continue;
       const o = ((h - s.height + y) * 1024 + x0 + x) * 4;
-      img.data.set([...palette[c], c === 117 ? 254 : 255], o); // 117: painted sky, cut by alphaTest in enhanced graphics
+      img.data.set([...palette[c], 255], o);
     }
     x0 += s.width;
   }

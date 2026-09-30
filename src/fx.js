@@ -7,6 +7,7 @@ import { UnrealBloomPass } from '../vendor/addons/postprocessing/UnrealBloomPass
 import { OutputPass } from '../vendor/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from '../vendor/addons/postprocessing/ShaderPass.js';
 import { createEffects } from './fx-effects.js';
+import { buildScenery } from './fx-scenery.js';
 
 // Shared uniforms: detail strength (0 = classic look), time (water), and the sky colours.
 const U = {
@@ -24,7 +25,7 @@ vec3 skyColor(vec3 d) {
 }`;
 
 // Surface kinds by original paint index (material_color_list), from the track shapes that use them.
-export const KIND = { asphalt: 1, marking: 2, dirt: 3, ice: 4, grass: 5, water: 6, concrete: 7 };
+export const KIND = { asphalt: 1, marking: 2, dirt: 3, ice: 4, grass: 5, water: 6, concrete: 7, building: 8 };
 const PAINT_KIND = {
   19: 'asphalt', 20: 'asphalt', 22: 'asphalt', 23: 'asphalt', 18: 'marking', 21: 'marking', 24: 'marking',
   25: 'dirt', 27: 'dirt', 28: 'ice', 30: 'ice', 16: 'grass', 101: 'grass', 102: 'grass', 103: 'grass', 104: 'grass',
@@ -101,6 +102,11 @@ if (uDetail > 0.0) {
         + 0.8 * vnoise(vec3(q / 11.0 - uTime * vec2(0.13, 0.11), uTime * 0.3 + 9.0)) * aw(fw, 11.0);
     alb = vec3(1.0, 0.55, 0.27); // paint 100 is a saturated blue: towards a deep teal
     sfRough = 0.04; sfRefl = 0.75;
+  } else if (k == 8) { // building facade: a grid of windows, some darker, glassy
+    vec2 g = vec2((p.x + p.z) / 90.0, p.y / 110.0), f = fract(g);
+    float win = step(0.2, f.x) * step(f.x, 0.8) * step(0.25, f.y) * step(f.y, 0.75) * aw(fw, 45.0);
+    alb = mix(vec3(1.0), vec3(0.3, 0.38, 0.5) * (0.6 + 0.8 * h3(vec3(floor(g), 3.0))), win);
+    sfRough = mix(0.8, 0.15, win); sfRefl = 0.35 * win;
   } else if (k == 7) { // concrete: speckle and stains
     float sp = vnoise(p / 1.6) * aw(fw, 1.6);
     alb = vec3(0.85 + 0.25 * big) * (0.9 + 0.2 * sp) * (1.0 - 0.2 * smoothstep(0.5, 0.8, fbm3(p / 60.0)));
@@ -123,10 +129,10 @@ if (uDetail > 0.0) normal = sfPerturb(-vViewPosition, normal, vec2(dFdx(sfH), dF
   return material;
 }
 
-export function createFx({ renderer, scene, skyScene, camera, sun, hemi, carMaterial, groundColor }) {
+export function createFx({ renderer, scene, skyScene, camera, sun, hemi, carMaterial, ground, groundColor }) {
   const skyHemi = skyScene.children.find(o => o.isHemisphereLight); // lights the clouds
-  const classic = { skyHemi: skyHemi.intensity, background: skyScene.background, fog: scene.fog, hemi: hemi.intensity, hemiColor: hemi.color.getHex(), sun: sun.intensity, sunColor: sun.color.getHex() };
-  const fog = new THREE.Fog(U.uHorizon.value, 2500, 90000); // haze; never full, so the ground still meets the horizon art
+  const classic = { skyHemi: skyHemi.intensity, background: skyScene.background, fog: scene.fog, hemi: hemi.intensity, hemiColor: hemi.color.getHex(), sun: sun.intensity, sunColor: sun.color.getHex(), far: camera.far };
+  const fog = new THREE.Fog(U.uHorizon.value, 3000, 140000); // haze; never full, so the ground still meets the horizon art
   U.uGround.value.copy(groundColor).lerp(U.uHorizon.value, 0.65); // ground seen past the far plane
 
   const skyMaterial = new THREE.ShaderMaterial({
@@ -174,6 +180,11 @@ void main() {
   }));
 
   const effects = createEffects();
+  // Distant 3D scenery per track scenery byte, built on first use.
+  const sceneryMaterial = addDetail(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95 }));
+  const sceneries = [];
+  let scenery = null;
+  const showScenery = () => { for (const g of sceneries) if (g) scene.remove(g); if (on && scenery !== null) scene.add(sceneries[scenery] ??= buildScenery(scenery, sceneryMaterial)); };
 
   let on = false;
   return {
@@ -183,6 +194,9 @@ void main() {
       U.uDetail.value = on ? 1 : 0;
       effects.clear();
       if (on) scene.add(effects.group); else scene.remove(effects.group);
+      showScenery();
+      ground.scale.setScalar(on ? 0.28 : 1); // ends inside the scenery ring, so its sea can show
+      camera.far = on ? 120000 : classic.far; camera.updateProjectionMatrix();
       sky.visible = on;
       skyScene.background = on ? null : classic.background;
       scene.fog = on ? fog : classic.fog;
@@ -195,6 +209,7 @@ void main() {
     },
     // Per rendered frame: dt in seconds (0 when paused), cars [{ cs, obj }], state.game_frame.
     update(dt, cars, frame) { effects.update(dt, cars, frame); },
+    setScenery(i) { scenery = i; showScenery(); },
     resize(w, h) { composer.setPixelRatio(renderer.getPixelRatio()); composer.setSize(w, h); },
     render() { U.uTime.value = performance.now() / 1000; sky.position.copy(camera.position); composer.render(); },
   };
