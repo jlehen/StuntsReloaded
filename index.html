@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stunts Reloaded</title>
+<style>
+  :root { --fg: #f2f4f8; --dim: #a8b0c0; --shadow: rgba(0,0,0,.6); --panel: rgba(14,18,26,.86); --line: rgba(255,255,255,.1);
+    --accent: #ffcf3f; --accent-fg: #15120a; --btn: #2c3342; --bad: #ff6b5b; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font: 15px/1.4 system-ui, sans-serif; color: var(--fg); }
+  canvas { display: block; }
+  #dash { position: fixed; inset: 0; pointer-events: none; }
+  #status { position: fixed; top: 16px; left: 16px; text-shadow: 0 1px 3px var(--shadow); }
+  #hud { position: fixed; inset: auto 0 16px 0; display: flex; justify-content: center; gap: 28px; flex-wrap: wrap;
+    text-shadow: 0 1px 3px var(--shadow); font: 600 20px/1.2 ui-monospace, monospace; pointer-events: none; }
+  #hud .pen { color: var(--bad); }
+  .panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(560px, calc(100% - 32px));
+    max-height: calc(100% - 32px); overflow: auto; background: var(--panel); border-radius: 14px; padding: 24px;
+    box-sizing: border-box; backdrop-filter: blur(8px); box-shadow: 0 10px 40px rgba(0,0,0,.4); }
+  .panel h2 { margin: 0 0 16px; font: 800 22px system-ui; }
+  .title-art { width: 100%; max-height: 42vh; object-fit: contain; image-rendering: pixelated; border-radius: 8px; margin-bottom: 8px; background: #000; }
+  .summary { color: var(--dim); font-size: 13px; margin: 4px 0 14px; }
+  .menu-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  button, .filebtn { font: 700 15px system-ui; padding: 10px 14px; border-radius: 9px; border: 0; cursor: pointer;
+    background: var(--btn); color: var(--fg); text-align: center; }
+  button:hover, .filebtn:hover { filter: brightness(1.2); }
+  button:focus-visible, .filebtn:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); color: var(--accent-fg); grid-column: 1 / -1; font-size: 18px; padding: 14px; }
+  button.on { outline: 2px solid var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  .filebtn input { display: none; }
+  .keys { margin-top: 16px; font-size: 13px; color: var(--dim); }
+  .back { margin-top: 18px; width: 100%; }
+  #cars { top: auto; bottom: 16px; transform: translateX(-50%); width: min(760px, calc(100% - 32px)); }
+  #car-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  #car-list button { font-size: 13px; padding: 6px 10px; }
+  #car-info { color: var(--dim); font-size: 13px; columns: 2; }
+  #car-paints { display: flex; gap: 8px; margin: 12px 0; align-items: center; }
+  .swatch { width: 30px; height: 30px; padding: 0; border-radius: 50%; border: 2px solid rgba(255,255,255,.3); }
+  #opp-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+  .opp { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 12px; padding: 8px; }
+  .portrait { width: 80px; height: 83px; image-rendering: pixelated; border-radius: 6px; }
+  .portrait.none { display: grid; place-items: center; background: #222; font-size: 30px; }
+  #opp-info { color: var(--dim); font-size: 13px; margin-top: 12px; white-space: pre-wrap; }
+  .row { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; gap: 12px; }
+  select { font: inherit; background: var(--btn); color: var(--fg); border: 0; border-radius: 6px; padding: 6px; }
+  #track-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+  .track { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 12px; }
+  .map { image-rendering: pixelated; border-radius: 4px; }
+  #res-face { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  #res-face canvas { width: 240px; image-rendering: pixelated; border-radius: 8px; }
+  #res-face p { font-style: italic; color: var(--dim); margin: 6px 0 0; text-align: center; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  th { color: var(--dim); font-weight: 500; }
+  tr.on td { color: var(--accent); font-weight: 700; }
+  #replaybar { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px;
+    background: var(--panel); padding: 8px; border-radius: 12px; }
+  #replaybar button { padding: 8px 12px; min-width: 44px; }
+  #rb-seek { width: min(360px, 40vw); accent-color: var(--accent); }
+  #ed-side { position: fixed; left: 0; top: 0; bottom: 0; width: 300px; background: var(--panel); display: flex; flex-direction: column;
+    padding: 12px; box-sizing: border-box; gap: 8px; }
+  #ed-bar, #ed-bar2, #ed-bar3 { display: flex; gap: 6px; }
+  #ed-bar input { flex: 1; font: 700 16px ui-monospace, monospace; background: var(--btn); color: var(--fg); border: 0; border-radius: 6px; padding: 6px 8px; text-transform: uppercase; min-width: 0; }
+  #ed-bar2 button, #ed-bar3 button { flex: 1; padding: 8px 6px; font-size: 13px; }
+  #ed-bar2 .go { background: var(--accent); color: var(--accent-fg); }
+  #ed-tool { font-size: 13px; color: var(--accent); min-height: 18px; }
+  #ed-palette { overflow-y: auto; overflow-x: hidden; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; align-content: start; flex: 1; }
+  #ed-palette h3 { grid-column: 1 / -1; margin: 8px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+  .ed-item { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 5px; font: 500 10px/1.2 system-ui; }
+  .ed-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .thumb { width: 100%; max-width: 64px; aspect-ratio: 1; border-radius: 6px; background: #1d3a1b; }
+  .thumb.erase { display: grid; place-items: center; font-size: 26px; background: #3a2020; }
+  #ed-status { position: fixed; left: 316px; bottom: 16px; right: 16px; text-align: center; font-weight: 600; text-shadow: 0 1px 3px var(--shadow); }
+  #ed-status.ok { color: #7ee07e; } #ed-status.bad { color: var(--bad); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="dash"></canvas>
+<div id="status">Loading…</div>
+<div id="hud" hidden></div>
+
+<div id="files" class="panel" hidden>
+  <h2>Stunts Reloaded needs the original game</h2>
+  <p>This remake runs on the data files of <em>Stunts 1.1</em> (1990). Select your Stunts folder (or drop its files here).
+    They stay in your browser.</p>
+  <label class="filebtn">Choose the Stunts folder<input type="file" id="files-pick" webkitdirectory multiple></label>
+  <p id="files-msg" class="summary"></p>
+</div>
+
+<div id="main" class="panel" hidden>
+  <div class="summary" id="m-summary"></div>
+  <div class="menu-buttons">
+    <button id="m-drive" class="primary">Drive</button>
+    <button id="m-car">Car</button>
+    <button id="m-opp">Opponent</button>
+    <button id="m-track">Track</button>
+    <label class="filebtn">Load replay<input type="file" id="m-replay" accept=".rpl,.RPL"></label>
+  </div>
+  <div class="keys">Arrows: drive · A / Z: shift up / down (manual) · C: camera · R: restart · M: sound · Esc: menu</div>
+</div>
+
+<div id="cars" class="panel" hidden>
+  <div id="car-list"></div>
+  <div id="car-info"></div>
+  <div id="car-paints"></div>
+  <div class="row"><label><input type="checkbox" id="car-manual"> Manual gearbox</label><button data-back>Done</button></div>
+</div>
+
+<div id="opps" class="panel" hidden>
+  <h2>Opponent</h2>
+  <div id="opp-list"></div>
+  <div id="opp-info"></div>
+  <div class="row" id="opp-car-row"><span>Opponent's car</span><select id="opp-car"></select></div>
+  <button class="back" data-back>Done</button>
+</div>
+
+<div id="tracks" class="panel" hidden>
+  <h2>Track</h2>
+  <div id="track-list"></div>
+  <div class="row">
+    <label class="filebtn">Import .TRK<input type="file" id="track-import" accept=".trk,.TRK" multiple></label>
+    <button id="track-edit">Edit</button>
+    <button id="track-delete">Delete</button>
+  </div>
+  <button class="back" data-back>Done</button>
+</div>
+
+<div id="results" class="panel" hidden>
+  <div id="res-face"></div>
+  <table id="res-table"></table>
+  <div id="res-hi-wrap"><h2>Best times</h2><table id="res-hi"></table></div>
+  <div class="menu-buttons">
+    <button id="res-again" class="primary">Race again</button>
+    <button id="res-replay">View replay</button>
+    <button id="res-save">Save replay</button>
+    <button id="res-menu">Main menu</button>
+  </div>
+</div>
+
+<div id="editor" hidden>
+  <div id="ed-side">
+    <div id="ed-bar">
+      <input id="ed-name" maxlength="8" spellcheck="false" aria-label="Track name">
+      <select id="ed-scenery" aria-label="Scenery"><option value="0">Desert</option><option value="1">Tropical</option>
+        <option value="2">Alpine</option><option value="3">City</option><option value="4">Country</option></select>
+    </div>
+    <div id="ed-bar2">
+      <button id="ed-undo" title="Undo (Ctrl+Z)">↶</button><button id="ed-validate">Check</button>
+      <button id="ed-test" class="go">Test drive</button>
+    </div>
+    <div id="ed-bar3"><button id="ed-save">Save</button><button id="ed-export">Export .TRK</button><button id="ed-clear">Clear</button><button id="ed-exit">Exit</button></div>
+    <div id="ed-tool">Pick a piece</div>
+    <div id="ed-palette"></div>
+  </div>
+  <div id="ed-status"></div>
+</div>
+
+<div id="replaybar" hidden>
+  <button id="rb-play" title="Pause (Space)">⏯</button>
+  <button id="rb-restart" title="Restart">⟲</button>
+  <button id="rb-speed" title="Speed">1×</button>
+  <input type="range" id="rb-seek" min="0" max="1" value="0" aria-label="Replay position">
+  <button id="rb-cam" title="Camera (C)">🎥</button>
+  <button id="rb-exit" title="Exit (Esc)">✕</button>
+</div>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
