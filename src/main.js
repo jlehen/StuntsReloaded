@@ -495,6 +495,8 @@ function frame(now) {
   if (mode === 'race' || mode === 'replay') updateHud();
   if (mode === 'replay' && document.activeElement !== $('rb-seek')) { $('rb-seek').max = replayFrames; $('rb-seek').value = state.game_frame; }
   const running = (mode === 'race' || mode === 'replay' || mode === 'finishing') && !paused;
+  if (fx.enabled) fx.update(running ? dt * (mode === 'replay' ? replaySpeed : 1) : 0,
+    [{ cs: state.playerstate, obj: carObj }, ...(oppObj ? [{ cs: state.opponentstate, obj: oppObj }] : [])], state.game_frame);
   updateAudio([{ cs: state.playerstate, active: true },
     { cs: state.opponentstate, active: !!gameconfig.game_opponenttype, distance: oppObj ? oppObj.position.distanceTo(camera.position) : 0 }], running);
   drawDash();

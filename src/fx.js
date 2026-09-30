@@ -6,6 +6,7 @@ import { RenderPass } from '../vendor/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from '../vendor/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from '../vendor/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from '../vendor/addons/postprocessing/ShaderPass.js';
+import { createEffects } from './fx-effects.js';
 
 // Shared uniforms: detail strength (0 = classic look), time (water), and the sky colours.
 const U = {
@@ -172,12 +173,16 @@ void main() {
 }`,
   }));
 
+  const effects = createEffects();
+
   let on = false;
   return {
     get enabled() { return on; },
     set enabled(v) {
       on = v;
       U.uDetail.value = on ? 1 : 0;
+      effects.clear();
+      if (on) scene.add(effects.group); else scene.remove(effects.group);
       sky.visible = on;
       skyScene.background = on ? null : classic.background;
       scene.fog = on ? fog : classic.fog;
@@ -188,6 +193,8 @@ void main() {
       sun.color.set(on ? 0xfff2e2 : classic.sunColor);
       Object.assign(carMaterial, on ? { envMap: env, clearcoat: 0.7, clearcoatRoughness: 0.1, roughness: 0.6 } : { envMap: null, clearcoat: 0, roughness: 0.9 });
     },
+    // Per rendered frame: dt in seconds (0 when paused), cars [{ cs, obj }], state.game_frame.
+    update(dt, cars, frame) { effects.update(dt, cars, frame); },
     resize(w, h) { composer.setPixelRatio(renderer.getPixelRatio()); composer.setSize(w, h); },
     render() { U.uTime.value = performance.now() / 1000; sky.position.copy(camera.position); composer.render(); },
   };
