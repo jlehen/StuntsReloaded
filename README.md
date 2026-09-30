@@ -8,7 +8,10 @@ Stunts (1990, a.k.a. *4D Sports Driving*) in the browser. The driving simulation
 
 You need the data files of Stunts 1.1. They are not included, because they belong to the original publisher.
 
-1. Put the Stunts files (`GAME.EXE`, `GAME1.P3S`, `CAR*.RES`, `ST*.P3S`, `OPP*.PRE`, ...) in `game/`. Alternatively, skip this step: the page then downloads them from the [restunts](https://github.com/4d-stunts/restunts/tree/master/stunts) repository, or, if that fails, asks for your Stunts folder (you can also drop the files onto it) and keeps them in the browser for later visits.
+1. Put the Stunts files (`GAME.EXE`, `GAME1.P3S`, `CAR*.RES`, `ST*.P3S`, `OPP*.PRE`, ...) in `game/`. Alternatively, skip this step: the page then downloads them from the [restunts](https://github.com/4d-stunts/restunts/tree/master/stunts) repository, or, if that fails, asks for your Stunts folder (you can also drop the files onto it) and keeps them in the browser for later visits. To fetch them into `game/` yourself, from this folder:
+   ```sh
+   mkdir -p game && curl -L https://github.com/4d-stunts/restunts/archive/refs/heads/master.tar.gz | tar xz -C game --strip-components=2 restunts-master/stunts && mv game/game.exe game/GAME.EXE
+   ```
 2. Serve this folder with any static web server and open it, for example `python3 -m http.server`, then http://localhost:8000.
 
 There is no build step: plain ES modules, with Three.js vendored in `vendor/`. It needs a browser with WebGL.
