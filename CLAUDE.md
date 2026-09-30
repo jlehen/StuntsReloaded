@@ -1,6 +1,6 @@
 # StuntsReloaded
 
-A browser remake of Stunts (1990). The driving simulation is a faithful, bit-exact port of the original game code. Rendering is new: the original low-poly geometry drawn with Three.js. It loads the original data files, which the user supplies in `game/` (never commit them).
+A browser remake of Stunts (1990). The driving simulation is a faithful, bit-exact port of the original game code. Rendering is new: the original low-poly geometry drawn with Three.js. It loads the original data files from `game/` (never commit them), else from the browser's cache of a folder the user picked, else from restunts on GitHub (`src/main.js`). To fill `game/`: `mkdir -p game && curl -L https://github.com/4d-stunts/restunts/archive/refs/heads/master.tar.gz | tar xz -C game --strip-components=2 restunts-master/stunts && mv game/game.exe game/GAME.EXE`.
 
 Run it with `python3 -m http.server` in the repo root, then open http://localhost:8000. There is no build step: the code is plain ES modules, and Three.js is vendored in `vendor/`.
 
