@@ -219,12 +219,12 @@ function padByte() {
   const p = navigator.getGamepads?.().find(g => g?.mapping === 'standard');
   if (!p) return 0;
   const b = i => p.buttons[i]?.pressed || p.buttons[i]?.value > 0.3;
-  return (b(7) || b(0) ? 1 : 0) | (b(6) || b(1) ? 2 : 0) | (p.axes[0] < -0.35 || b(14) ? 4 : 0) |
-    (p.axes[0] > 0.35 || b(15) ? 8 : 0) | (b(5) ? 0x10 : 0) | (b(4) ? 0x20 : 0);
+  return (b(7) || b(0) ? 1 : 0) | (b(6) || b(1) ? 2 : 0) | (p.axes[0] > 0.35 || b(15) ? 4 : 0) |
+    (p.axes[0] < -0.35 || b(14) ? 8 : 0) | (b(5) ? 0x10 : 0) | (b(4) ? 0x20 : 0);
 }
 const inputByte = () => feed ? feed[0x1a + 1802 + (G.game_replay_mode === 1 ? 0 : state.game_frame)] ?? 0 :
   (keys.has('ArrowUp') || params.has('auto') ? 1 : 0) | (keys.has('ArrowDown') ? 2 : 0) |
-  (keys.has('ArrowLeft') ? 4 : 0) | (keys.has('ArrowRight') ? 8 : 0) | (keys.has('KeyA') ? 0x10 : 0) | (keys.has('KeyZ') ? 0x20 : 0) | padByte();
+  (keys.has('ArrowRight') ? 4 : 0) | (keys.has('ArrowLeft') ? 8 : 0) | (keys.has('KeyA') ? 0x10 : 0) | (keys.has('KeyZ') ? 0x20 : 0) | padByte();
 
 // --- Simulation tick (run_game's loop) ------------------------------------------------------
 function tick() {
@@ -445,7 +445,9 @@ function frame(now) {
   if (inShowroom) {
     const a = now / 4000;
     showCam.position.set(Math.cos(a) * 260, 90, Math.sin(a) * 260);
-    showCam.lookAt(0, -70, 0); // car sits above the panel
+    showCam.lookAt(0, 10, 0);
+    const free = $('cars').getBoundingClientRect().top || innerHeight; // centre the car in the space above the panel
+    showCam.setViewOffset(innerWidth, innerHeight, 0, (innerHeight - free) / 2, innerWidth, innerHeight);
     renderer.clear();
     renderer.render(showroom, showCam);
     requestAnimationFrame(frame);
