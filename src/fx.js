@@ -7,7 +7,8 @@ import { UnrealBloomPass } from '../vendor/addons/postprocessing/UnrealBloomPass
 import { OutputPass } from '../vendor/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from '../vendor/addons/postprocessing/ShaderPass.js';
 import { createEffects } from './fx-effects.js';
-import { buildScenery } from './fx-scenery.js';
+import { buildScenery, buildClouds } from './fx-scenery.js';
+import { CSM } from '../vendor/addons/csm/CSM.js';
 
 // Shared uniforms: detail strength (0 = classic look), time (water), and the sky colours.
 const U = {
@@ -35,7 +36,9 @@ export const surfaceKind = paint => KIND[PAINT_KIND[paint]] ?? 0;
 
 // Procedural surfaces in world space (vertex attribute `kind`): albedo variation, bump, roughness and,
 // for water and ice, sky reflections. Features smaller than a pixel fade out (aw) instead of shimmering.
+const lit = new Set(); // materials that get the surface shader, and the cascaded shadows below
 export function addDetail(material) {
+  lit.add(material);
   material.onBeforeCompile = s => {
     Object.assign(s.uniforms, U);
     s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\nattribute float kind;\nvarying vec3 vWPos;\nvarying float vKind;')
@@ -130,9 +133,8 @@ if (uDetail > 0.0) normal = sfPerturb(-vViewPosition, normal, vec2(dFdx(sfH), dF
 }
 
 export function createFx({ renderer, scene, skyScene, camera, sun, hemi, carMaterial, ground, groundColor }) {
-  const skyHemi = skyScene.children.find(o => o.isHemisphereLight); // lights the clouds
-  const classic = { skyHemi: skyHemi.intensity, background: skyScene.background, fog: scene.fog, hemi: hemi.intensity, hemiColor: hemi.color.getHex(), sun: sun.intensity, sunColor: sun.color.getHex(), far: camera.far };
-  const fog = new THREE.Fog(U.uHorizon.value, 3000, 140000); // haze; never full, so the ground still meets the horizon art
+  const classic = { background: skyScene.background, fog: scene.fog, hemi: hemi.intensity, hemiColor: hemi.color.getHex(), sun: sun.intensity, sunColor: sun.color.getHex(), far: camera.far };
+  const fog = new THREE.Fog(U.uHorizon.value, 3000, 100000); // haze over the distant scenery
   U.uGround.value.copy(groundColor).lerp(U.uHorizon.value, 0.65); // ground seen past the far plane
 
   const skyMaterial = new THREE.ShaderMaterial({
@@ -181,10 +183,36 @@ void main() {
 
   const effects = createEffects();
   // Distant 3D scenery per track scenery byte, built on first use.
-  const sceneryMaterial = addDetail(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95 }));
+  // Depth-offset like the classic ground plane, so the track's terrain tiles (y 0) stay in front.
+  // Emissive: distant faces turned from the sun would be near black; haze lifts them.
+  const sceneryMaterial = addDetail(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95,
+    polygonOffset: true, polygonOffsetFactor: 4, polygonOffsetUnits: 16, emissive: 0x3a4658 }));
+  const seaMaterial = addDetail(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.1 })); // no offset: in front of the land it floods
   const sceneries = [];
   let scenery = null;
-  const showScenery = () => { for (const g of sceneries) if (g) scene.remove(g); if (on && scenery !== null) scene.add(sceneries[scenery] ??= buildScenery(scenery, sceneryMaterial)); };
+  const showScenery = () => { for (const g of sceneries) if (g) scene.remove(g); if (on && scenery !== null) scene.add(sceneries[scenery] ??= buildScenery(scenery, sceneryMaterial, seaMaterial, ground.material)); };
+
+  const clouds = buildClouds(U);
+  clouds.visible = false;
+  skyScene.add(clouds);
+
+  // Cascaded shadow maps replace the sun's single map around the car: four 2048² cascades split
+  // at 600, 2500, 8000 and 25000 units, so the whole visible track casts shadows. CSM swaps
+  // three.js's light chunks globally; materials opt in with the USE_CSM define, set only when on.
+  const csm = new CSM({
+    camera, parent: scene, cascades: 4, maxFar: 25000, shadowMapSize: 2048, mode: 'custom',
+    customSplitsCallback: (n, near, far, out) => out.push(600 / far, 2500 / far, 8000 / far, 1),
+    lightDirection: U.uSunDir.value.clone().negate(), lightIntensity: 3, lightFar: 80000, lightMargin: 8000, shadowBias: -0.0003,
+  });
+  for (const l of csm.lights) { l.color.set(0xfff2e2); l.shadow.normalBias = 1.5; }
+  const shadowed = [...lit, carMaterial, effects.marksMaterial];
+  for (const m of shadowed) {
+    const own = m.onBeforeCompile;
+    csm.setupMaterial(m); // replaces onBeforeCompile: chain ours after it
+    const hook = m.onBeforeCompile;
+    m.onBeforeCompile = (s, r) => { hook(s, r); if (lit.has(m)) own(s, r); };
+    m.customProgramCacheKey = () => (lit.has(m) ? 'detail' : 'plain') + '+csm';
+  }
 
   let on = false;
   return {
@@ -195,12 +223,19 @@ void main() {
       effects.clear();
       if (on) scene.add(effects.group); else scene.remove(effects.group);
       showScenery();
-      ground.scale.setScalar(on ? 0.28 : 1); // ends inside the scenery ring, so its sea can show
+      ground.visible = !on; // the scenery brings its own round ground
       camera.far = on ? 120000 : classic.far; camera.updateProjectionMatrix();
       sky.visible = on;
       skyScene.background = on ? null : classic.background;
       scene.fog = on ? fog : classic.fog;
-      skyHemi.intensity = on ? 4.5 : classic.skyHemi;
+      clouds.visible = on;
+      for (const m of shadowed) {
+        if (on) Object.assign(m.defines, { USE_CSM: 1, CSM_CASCADES: 4 }); else { delete m.defines.USE_CSM; delete m.defines.CSM_CASCADES; }
+        m.needsUpdate = true;
+      }
+      for (const l of csm.lights) l.visible = on;
+      sun.visible = !on;
+      csm.updateFrustums();
       hemi.intensity = on ? 0.6 : classic.hemi;
       hemi.color.set(on ? 0xf2f2f0 : classic.hemiColor);
       sun.intensity = on ? 3 : classic.sun;
@@ -210,7 +245,13 @@ void main() {
     // Per rendered frame: dt in seconds (0 when paused), cars [{ cs, obj }], state.game_frame.
     update(dt, cars, frame) { effects.update(dt, cars, frame); },
     setScenery(i) { scenery = i; showScenery(); },
-    resize(w, h) { composer.setPixelRatio(renderer.getPixelRatio()); composer.setSize(w, h); },
-    render() { U.uTime.value = performance.now() / 1000; sky.position.copy(camera.position); composer.render(); },
+    resize(w, h) { composer.setPixelRatio(renderer.getPixelRatio()); composer.setSize(w, h); csm.updateFrustums(); },
+    render() {
+      U.uTime.value = performance.now() / 1000;
+      sky.position.copy(camera.position);
+      camera.updateMatrixWorld();
+      csm.update();
+      composer.render();
+    },
   };
 }

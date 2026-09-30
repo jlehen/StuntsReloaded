@@ -491,7 +491,7 @@ function frame(now) {
   sun.position.copy(carObj.position).add(new THREE.Vector3(1500, 3000, 1000));
   sun.target.position.copy(carObj.position);
   horizon.position.copy(camera.position);
-  horizon.visible = !fx.enabled;
+  horizon.visible = clouds.visible = !fx.enabled; // enhanced graphics has its own
   clouds.position.set(camera.position.x, 0, camera.position.z);
   if (mode === 'race' || mode === 'replay') updateHud();
   if (mode === 'replay' && document.activeElement !== $('rb-seek')) { $('rb-seek').max = replayFrames; $('rb-seek').value = state.game_frame; }

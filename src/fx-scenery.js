@@ -72,7 +72,7 @@ const SCENES = [
   },
 ];
 
-export function buildScenery(index, material) {
+export function buildScenery(index, material, seaMaterial, groundMaterial) {
   const S = SCENES[index] ?? SCENES[4];
   const pos = [], col = [], kind = [];
   const c = new THREE.Color();
@@ -93,7 +93,7 @@ export function buildScenery(index, material) {
     const r = R0 * (R1 / R0) ** (j / NR), row = [];
     for (let i = 0; i < NA; i++) {
       const a = (i / NA) * Math.PI * 2, x = CX + r * Math.cos(a), z = CZ + r * Math.sin(a);
-      row.push([x, S.h(x, z) * smooth(R0, R0 + 9000, r), z]);
+      row.push([x, S.h(x, z) * smooth(R0, R0 + 9000, r) - 1, z]); // inner edge meets the ground disk (y -1)
     }
     grid.push(row);
   }
@@ -135,6 +135,7 @@ export function buildScenery(index, material) {
       const x = CX + r * Math.cos(a), z = CZ + r * Math.sin(a);
       if (fbm(x / 6000, z / 6000, 32, 2) < 0.55) continue;
       const y = S.h(x, z) * smooth(R0, R0 + 9000, r), h = 350 + hash(n, 3, 31) * 450, w = h * 0.35;
+      if (y < 60) continue; // not on the beach or in the sea
       const ring = [0, 1, 2, 3, 4].map(k => [x + w * Math.cos(k * 1.2566), y, z + w * Math.sin(k * 1.2566)]);
       c.setRGB(...tone[n % 3], THREE.SRGBColorSpace);
       for (let k = 0; k < 5; k++) {
@@ -151,12 +152,78 @@ export function buildScenery(index, material) {
   g.computeVertexNormals();
   const group = new THREE.Group();
   group.add(new THREE.Mesh(g, material));
+  // Ground under and around the track (the classic ground plane is square and would cut the sea).
+  const disk = new THREE.CircleGeometry(R0, NA).rotateX(-Math.PI / 2).translate(CX, -1, CZ);
+  disk.setAttribute('kind', new THREE.Float32BufferAttribute(Array(disk.getAttribute('position').count).fill(KIND.grass), 1));
+  const ground = new THREE.Mesh(disk, groundMaterial);
+  ground.receiveShadow = true;
+  group.add(ground);
   if (S.sea) { // water sheet under the land, the shader's water
     const sea = new THREE.RingGeometry(R0 - 500, R1, 90, 1).rotateX(-Math.PI / 2).translate(CX, -60, CZ);
     const n = sea.getAttribute('position').count;
     sea.setAttribute('color', new THREE.Float32BufferAttribute(Array(n).fill([0, 0.22, 0.64]).flat(), 3));
     sea.setAttribute('kind', new THREE.Float32BufferAttribute(Array(n).fill(KIND.water), 1));
-    group.add(new THREE.Mesh(sea, material));
+    group.add(new THREE.Mesh(sea, seaMaterial));
   }
   return group;
+}
+
+// Soft clouds: clusters of camera-facing puffs with procedural edges, lit from the sun side and
+// hazed towards the horizon, drifting slowly and wrapping around the track. U: fx.js uniforms.
+export function buildClouds(U) {
+  const puffs = [];
+  for (let n = 0; n < 45; n++) {
+    const a = hash(n, 1, 41) * Math.PI * 2, r = 8000 + Math.sqrt(hash(n, 2, 41)) * 70000;
+    const cx = CX + r * Math.cos(a), cz = CZ + r * Math.sin(a), cy = 6500 + hash(n, 3, 41) * 4000;
+    const w = 2500 + hash(n, 4, 41) * 5000, count = 8 + Math.floor(hash(n, 5, 41) * 12);
+    for (let k = 0; k < count; k++) {
+      const u = hash(n, 10 + k, 42) * 2 - 1, v = hash(n, 40 + k, 42), t = hash(n, 70 + k, 42) * 2 - 1;
+      const dx = u * w, dy = v * w * 0.22, dz = t * w * 0.5;
+      const size = (0.35 + 0.4 * hash(n, 100 + k, 42)) * w * (1 - 0.5 * Math.abs(u));
+      puffs.push([cx + dx, cy + dy, cz + dz, size, cx, cz, dy / (w * 0.22), hash(n, 130 + k, 42)]);
+    }
+  }
+  const geo = new THREE.InstancedBufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+  geo.setIndex([0, 1, 2, 0, 2, 3]);
+  geo.setAttribute('iPos', new THREE.InstancedBufferAttribute(new Float32Array(puffs.flatMap(p => p.slice(0, 3))), 3));
+  geo.setAttribute('iDataA', new THREE.InstancedBufferAttribute(new Float32Array(puffs.flatMap(p => p.slice(3, 7))), 4)); // size, centre x, centre z, height in cluster
+  geo.setAttribute('iDataB', new THREE.InstancedBufferAttribute(new Float32Array(puffs.map(p => p[7])), 1)); // seed
+  geo.instanceCount = puffs.length;
+  const mat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, uniforms: U,
+    vertexShader: `attribute vec3 iPos; attribute vec4 iDataA; attribute float iDataB;
+uniform float uTime;
+varying vec2 vUv; varying float vShade, vSeed, vHaze;
+void main() {
+  vUv = position.xy; vSeed = iDataB;
+  // Drift east, wrapping whole clusters over a 180000-wide square around the track.
+  float cx = iDataA.y - ${CX.toFixed(1)};
+  vec3 p = iPos + vec3(mod(cx + uTime * 35.0 + 90000.0, 180000.0) - 90000.0 - cx, 0.0, 0.0);
+  vShade = clamp(0.35 + 0.65 * iDataA.w, 0.0, 1.0);
+  vec4 mv = modelViewMatrix * vec4(p, 1.0);
+  vHaze = smoothstep(15000.0, 110000.0, length(mv.xyz));
+  mv.xy += position.xy * iDataA.x;
+  gl_Position = projectionMatrix * mv;
+}`,
+    fragmentShader: `uniform vec3 uHorizon, uSunDir;
+varying vec2 vUv; varying float vShade, vSeed, vHaze;
+float h2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float n2(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(h2(i), h2(i + vec2(1, 0)), f.x), mix(h2(i + vec2(0, 1)), h2(i + vec2(1, 1)), f.x), f.y); }
+void main() {
+  vec2 q = vUv * 2.5 + vSeed * 17.0;
+  float n = 0.5 * n2(q) + 0.3 * n2(q * 2.1) + 0.2 * n2(q * 4.3);
+  float a = smoothstep(1.0, 0.35, length(vUv) + (n - 0.5) * 0.7);
+  float lit = clamp(vShade + 0.35 * vUv.y + 0.25 * (n - 0.5), 0.0, 1.0);
+  vec3 c = mix(vec3(0.58, 0.64, 0.74), vec3(1.25, 1.22, 1.15), lit);
+  c = mix(c, uHorizon, vHaze * 0.8);
+  gl_FragColor = vec4(c, a * 0.85 * (1.0 - 0.5 * vHaze));
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  return mesh;
 }

@@ -168,7 +168,7 @@ export function createEffects() {
   }
 
   return {
-    group,
+    group, marksMaterial: marks.material,
     // cars: [{ cs, obj }] (active ones); frame: state.game_frame. A jump in frames (restart, seek) clears.
     update(dt, list, frame) {
       if (frame < lastFrame || frame > lastFrame + 40) this.clear();
