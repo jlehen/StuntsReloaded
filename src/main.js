@@ -3,7 +3,7 @@ import { preload, getFile, loadCachedFiles, addUserFiles } from './files.js';
 import { boot, loadTrack, loadReplay, setupRace, step, state, gameconfig, carId, td } from './race.js';
 import { G, M, A, rsw, farptr } from './mem.js';
 import { simd_player } from './structs.js';
-import { createFx, addDetail } from './fx.js';
+import { createFx, addDetail, KIND } from './fx.js';
 import { THREE, matCar, initMaterials, loadShapes, buildTrack, buildCar, carPose, paintColor, buildTruck, buildHorizon, paintHex, animateWheels, animateTrack, buildDebris, updateDebris, buildClouds, buildSigns, updateSigns } from './render.js';
 import { multiply_and_scale, sin_fast, cos_fast } from './math.js';
 import { callTop } from './calls.js';
@@ -70,9 +70,11 @@ sun.shadow.mapSize.set(4096, 4096);
 Object.assign(sun.shadow.camera, { left: -2500, right: 2500, top: 2500, bottom: -2500, near: 100, far: 10000 });
 sun.shadow.bias = -0.0005;
 scene.add(sun, sun.target);
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(200000, 200000), addDetail(new THREE.MeshStandardMaterial({ color: groundColor, roughness: 1 })));
+const groundGeo = new THREE.PlaneGeometry(200000, 200000);
+groundGeo.setAttribute('kind', new THREE.Float32BufferAttribute(Array(4).fill(KIND.grass), 1));
+const ground = new THREE.Mesh(groundGeo, addDetail(new THREE.MeshStandardMaterial({ color: groundColor, roughness: 1, polygonOffset: true, polygonOffsetFactor: 4, polygonOffsetUnits: 16 })));
 ground.rotation.x = -Math.PI / 2;
-ground.position.set(15360, -1, -15360);
+ground.position.set(15360, -1, -15360); // depth-offset behind the terrain tiles (lakes are at y 0)
 ground.receiveShadow = true;
 scene.add(ground);
 const camera = new THREE.PerspectiveCamera(60, 1, 2, 60000);
@@ -390,7 +392,7 @@ function updateHud() {
 const oppName = i => { const d = text(`OPP${i}.PRE`, 'edes'); return d[1] || d[0] || `Opponent ${i}`; };
 const app = {
   CARS, settings,
-  save: () => { store.set('settings', settings); fx.enabled = settings.enhanced; },
+  save: () => { store.set('settings', settings); fx.enabled = settings.enhanced || params.has('enhanced'); },
   startRace, startReplay, toMenu,
   carName: c => carNames[c],
   carDescription: c => text(`CAR${c}.RES`, 'edes'),

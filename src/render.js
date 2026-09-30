@@ -7,7 +7,7 @@ import { call } from './calls.js';
 import { sin_fast as sin, cos_fast as cos, multiply_and_scale as mulScale } from './math.js';
 import { decompress, parseRes, parseShape3d, parsePalette, parseShape2d } from './res.js';
 import { getFile } from './files.js';
-import { addDetail } from './fx.js';
+import { addDetail, surfaceKind } from './fx.js';
 
 export const ANGLE = Math.PI * 2 / 1024;
 let palette, materialColor, materialPattern;
@@ -43,16 +43,18 @@ export const matCar = new THREE.MeshPhysicalMaterial({ vertexColors: true, flatS
 
 // Geometry buckets: accumulate triangles (already transformed) per material kind.
 class Bucket {
-  constructor() { this.pos = []; this.col = []; }
-  tri(a, b, c, color) {
+  constructor() { this.pos = []; this.col = []; this.kind = []; }
+  tri(a, b, c, color, kind = 0) {
     this.pos.push(...a, ...b, ...c);
     for (let i = 0; i < 3; i++) this.col.push(color.r, color.g, color.b);
+    this.kind.push(kind, kind, kind);
   }
   mesh(material) {
     if (!this.pos.length) return null;
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
+    g.setAttribute('kind', new THREE.Float32BufferAttribute(this.kind, 1)); // surface kind (fx.js)
     g.computeVertexNormals();
     const m = new THREE.Mesh(g, material);
     m.castShadow = m.receiveShadow = true;
@@ -69,7 +71,7 @@ export class Builder {
       const color = paintColor(paint);
       const bucket = kind ? this[kind] : materialPattern[paint] ? this.glass : (p.flags & 2) ? this.decal : this.base;
       if (p.type >= 3 && p.type <= 10) {
-        for (let i = 1; i + 1 < p.idx.length; i++) bucket.tri(v[p.idx[0]], v[p.idx[i]], v[p.idx[i + 1]], color);
+        for (let i = 1; i + 1 < p.idx.length; i++) bucket.tri(v[p.idx[0]], v[p.idx[i]], v[p.idx[i + 1]], color, surfaceKind(paint));
       } else if (p.type === 11) { // sphere: center, point on surface
         sphere(bucket, v[p.idx[0]], v[p.idx[1]], color);
       } else if (p.type === 12) { // wheel: 6 verts, two rims (center, radius point, width point)
