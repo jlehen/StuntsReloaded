@@ -11,8 +11,8 @@ export const getFile = name => FILES.get(name.toUpperCase()) ?? null;
 // Browser: fetch the whole game directory listing we know about.
 export async function preload(names, base = 'game/') {
   await Promise.all(names.map(async n => {
-    const r = await fetch(base + n);
-    if (r.ok) addFile(n, new Uint8Array(await r.arrayBuffer()));
+    const r = await fetch(base + n).catch(() => null); // offline: fall through to the folder picker
+    if (r?.ok) addFile(n, new Uint8Array(await r.arrayBuffer()));
   }));
 }
 

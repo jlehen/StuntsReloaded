@@ -22,9 +22,11 @@ const params = new URLSearchParams(location.search);
 const store = { get: (k, d) => { try { return JSON.parse(localStorage.getItem('stunts.' + k)) ?? d; } catch { return d; } },
   set: (k, v) => { try { localStorage.setItem('stunts.' + k, JSON.stringify(v)); } catch { /* storage unavailable */ } } };
 
-// Game files: served from game/, else the user's own copy (cached in IndexedDB).
+// Game files: served from game/, else the user's own copy (cached in IndexedDB), else restunts' copy on GitHub.
 await preload(GAME_FILES);
 if (!getFile('GAME.EXE')) await loadCachedFiles();
+if (!getFile('GAME.EXE')) await preload(GAME_FILES.map(n => n === 'GAME.EXE' ? 'game.exe' : n), // lower-case there
+  'https://raw.githubusercontent.com/4d-stunts/restunts/master/stunts/');
 if (!getFile('GAME.EXE')) await askForFiles();
 async function askForFiles() {
   $('status').textContent = '';
