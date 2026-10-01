@@ -1,5 +1,7 @@
 # Stunts Reloaded
 
+> **A much better version exists:** [playstunts](https://github.com/ACatWithEbola/playstunts), playable at https://playstunts.com.
+
 Stunts (1990, a.k.a. *4D Sports Driving*) in the browser. The driving simulation is the original game's, ported function by function to JavaScript and verified bit-exact against the original machine code. The rendering is new: the original low-poly shapes drawn with Three.js, with lighting, shadows, anti-aliasing, widescreen and a smooth frame rate.
 
 **Play it now: https://jlehen.github.io/StuntsReloaded/**
