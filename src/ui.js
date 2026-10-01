@@ -87,12 +87,12 @@ export function initUI(app) {
     $('opp-car-row').hidden = !s.opponent;
   }
 
-  // Tracks: built-in DEFAULT plus imported ones (kept in localStorage).
+  // Tracks: built-in DEFAULT, the shared bucket's, plus imported ones (kept in localStorage).
   function renderTracks() {
     const s = app.settings;
     $('track-list').replaceChildren(...app.trackNames().map(n => el('button', { className: 'track' + (n === s.track ? ' on' : ''),
       onclick: () => { s.track = n; app.save(); renderTracks(); } }, trackMap(app.trackBytes(n), 96), el('span', { textContent: n }))));
-    $('track-delete').disabled = s.track === 'DEFAULT';
+    $('track-delete').disabled = !app.isImported(s.track);
   }
   $('track-import').onchange = async e => {
     for (const f of e.target.files) app.importTrack(f.name.replace(/\.trk$/i, '').toUpperCase().slice(0, 8), new Uint8Array(await f.arrayBuffer()));

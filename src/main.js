@@ -23,6 +23,24 @@ const params = new URLSearchParams(location.search);
 const store = { get: (k, d) => { try { return JSON.parse(localStorage.getItem('stunts.' + k)) ?? d; } catch { return d; } },
   set: (k, v) => { try { localStorage.setItem('stunts.' + k, JSON.stringify(v)); } catch { /* storage unavailable */ } } };
 
+// Shared tracks from the public 4dstunts-tracks bucket (the JSON API sends CORS headers), fetched while the game loads.
+const GCS = 'https://storage.googleapis.com/storage/v1/b/4dstunts-tracks/o';
+// ponytail: downloads every track at startup, fetch on demand if the bucket grows to thousands.
+const remoteTracks = (async () => {
+  const items = [];
+  for (let page = ''; page != null;) {
+    const r = await fetch(`${GCS}?fields=items(name),nextPageToken${page && '&pageToken=' + page}`);
+    if (!r.ok) throw new Error(`track bucket: ${r.status}`);
+    const j = await r.json();
+    items.push(...(j.items ?? []).filter(o => /\.trk$/i.test(o.name)));
+    page = j.nextPageToken;
+  }
+  return Object.fromEntries((await Promise.all(items.map(async o => {
+    const r = await fetch(`${GCS}/${encodeURIComponent(o.name)}?alt=media`);
+    return [o.name.split('/').pop().replace(/\.trk$/i, '').toUpperCase().slice(0, 8), new Uint8Array(await r.arrayBuffer())];
+  }))).filter(([, b]) => b.length >= 1801));
+})().catch(e => { console.warn(e); return {}; });
+
 // Game files: served from game/, else the user's own copy (cached in IndexedDB), else restunts' copy on GitHub.
 await preload(GAME_FILES);
 if (!getFile('GAME.EXE')) await loadCachedFiles();
@@ -103,8 +121,9 @@ const settings = Object.assign({ car: 'COUN', paint: 0, manual: false, opponent:
 fx.enabled = settings.enhanced || params.has('enhanced');
 const tracks = store.get('tracks', {}); // name -> base64 of the 1802-byte .TRK
 const b64 = { enc: u => btoa(String.fromCharCode(...u)), dec: s => Uint8Array.from(atob(s), c => c.charCodeAt(0)) };
-const trackBytes = n => n === 'DEFAULT' || !tracks[n] ? getFile('DEFAULT.TRK') : b64.dec(tracks[n]);
-if (settings.track !== 'DEFAULT' && !tracks[settings.track]) settings.track = 'DEFAULT';
+const remote = await remoteTracks; // name -> bytes, imported tracks of the same name take precedence
+const trackBytes = n => n !== 'DEFAULT' && tracks[n] ? b64.dec(tracks[n]) : n !== 'DEFAULT' && remote[n] ? remote[n] : getFile('DEFAULT.TRK');
+if (settings.track !== 'DEFAULT' && !tracks[settings.track] && !remote[settings.track]) settings.track = 'DEFAULT';
 const carNames = Object.fromEntries(CARS.map(c => [c, text(`CAR${c}.RES`, 'gnam')[0] || c]));
 
 // --- Scene contents -----------------------------------------------------------------------
@@ -399,7 +418,8 @@ const app = {
   carDescription: c => text(`CAR${c}.RES`, 'edes'),
   carPaints: c => { const car0 = loadShapes(`ST${c}.P3S`).car0; return [...Array(car0.npaints)].map((_, i) => paintHex(car0, i)); },
   oppName,
-  trackNames: () => ['DEFAULT', ...Object.keys(tracks).filter(n => n !== 'DEFAULT').sort()],
+  trackNames: () => ['DEFAULT', ...new Set([...Object.keys(tracks), ...Object.keys(remote)].filter(n => n !== 'DEFAULT').sort())],
+  isImported: n => n !== 'DEFAULT' && !!tracks[n],
   trackBytes,
   importTrack: (n, bytes) => { if (bytes.length >= 1801) { tracks[n] = b64.enc(bytes.subarray(0, 1802)); store.set('tracks', tracks); settings.track = n; app.save(); } },
   deleteTrack: n => { delete tracks[n]; store.set('tracks', tracks); settings.track = 'DEFAULT'; app.save(); },
