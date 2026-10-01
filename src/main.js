@@ -99,7 +99,7 @@ function resize() {
 addEventListener('resize', resize);
 
 // --- Settings, tracks, highscores ---------------------------------------------------------
-const settings = Object.assign({ car: 'COUN', paint: 0, manual: false, opponent: 0, oppCar: 'PMIN', track: 'DEFAULT', enhanced: false }, store.get('settings', {}));
+const settings = Object.assign({ car: 'COUN', paint: 0, manual: false, opponent: 0, oppCar: 'PMIN', track: 'DEFAULT', enhanced: true }, store.get('settings', {}));
 fx.enabled = settings.enhanced || params.has('enhanced');
 const tracks = store.get('tracks', {}); // name -> base64 of the 1802-byte .TRK
 const b64 = { enc: u => btoa(String.fromCharCode(...u)), dec: s => Uint8Array.from(atob(s), c => c.charCodeAt(0)) };
