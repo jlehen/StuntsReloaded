@@ -18,7 +18,7 @@
     max-height: calc(100% - 32px); overflow: auto; background: var(--panel); border-radius: 14px; padding: 24px;
     box-sizing: border-box; backdrop-filter: blur(8px); box-shadow: 0 10px 40px rgba(0,0,0,.4); }
   .panel h2 { margin: 0 0 16px; font: 800 22px system-ui; }
-  .title-art { width: 100%; max-height: 42vh; object-fit: contain; image-rendering: pixelated; border-radius: 8px; margin-bottom: 8px; background: #000; }
+  .title-art { width: 100%; max-height: 36vh; object-fit: contain; image-rendering: pixelated; border-radius: 8px; margin-bottom: 8px; background: #000; }
   .summary { color: var(--dim); font-size: 13px; margin: 4px 0 14px; }
   .menu-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   button, .filebtn { font: 700 15px system-ui; padding: 10px 14px; border-radius: 9px; border: 0; cursor: pointer;
@@ -58,6 +58,10 @@
     background: var(--panel); padding: 8px; border-radius: 12px; }
   #replaybar button { padding: 8px 12px; min-width: 44px; }
   #rb-seek { width: min(360px, 40vw); accent-color: var(--accent); }
+  #m-fragility { flex: 1; min-width: 0; accent-color: var(--accent); }
+  #m-fragility-val { min-width: 9.5em; text-align: right; font-variant-numeric: tabular-nums; }
+  #res-hi-note { margin: -10px 0 8px; }
+  #res-hi-note:empty { display: none; }
   #ed-side { position: fixed; left: 0; top: 0; bottom: 0; width: 300px; background: var(--panel); display: flex; flex-direction: column;
     padding: 12px; box-sizing: border-box; gap: 8px; }
   #ed-bar, #ed-bar2, #ed-bar3 { display: flex; gap: 6px; }
@@ -98,7 +102,11 @@
     <button id="m-track">Track</button>
     <label class="filebtn">Load replay<input type="file" id="m-replay" accept=".rpl,.RPL"></label>
   </div>
-  <div class="row"><label><input type="checkbox" id="m-enhanced"> Enhanced graphics</label></div>
+  <div class="row"><label><input type="checkbox" id="m-enhanced"> Enhanced graphics</label>
+    <label title="Quick, precise steering that stops at what the tyres can hold. On a gamepad, the stick steers in proportion.">
+      <input type="checkbox" id="m-assist"> Steering assist</label></div>
+  <div class="row"><label for="m-fragility" title="How hard a hit the car takes before it is wrecked">Car fragility</label>
+    <input type="range" id="m-fragility" min="0" max="100" step="5"><output id="m-fragility-val" for="m-fragility"></output></div>
   <div class="keys">Arrows: drive · A / Z: shift up / down (manual) · C: camera · R: restart · M: sound · Esc: menu</div>
 </div>
 
@@ -131,7 +139,7 @@
 <div id="results" class="panel" hidden>
   <div id="res-face"></div>
   <table id="res-table"></table>
-  <div id="res-hi-wrap"><h2>Best times</h2><table id="res-hi"></table></div>
+  <div id="res-hi-wrap"><h2>Best times</h2><div class="summary" id="res-hi-note"></div><table id="res-hi"></table></div>
   <div class="menu-buttons">
     <button id="res-again" class="primary">Race again</button>
     <button id="res-replay">View replay</button>

@@ -43,6 +43,9 @@ In the track editor, click to place a piece, right-click or R rotates it, drag p
   - the original's trackside TV cameras
 - **Track editor:** built on the original track checker, so you get the same errors as in the original editor ("pieces do not connect", "jump is too long", ...), and the faulty tile is highlighted. You can test-drive, save, and export a `.TRK`.
 - **Replays:** view them with pause, speed and seeking, save and load them as `.RPL` (compatible with the original game), and keep best times per track.
+- **Driving options** (main menu). Races driven with either keep their own best times, and their replays record the options, so they play back here but not in the original game.
+  - Steering assist (off by default): the original wheel turns slowly, returns slowly, and keeps turning past what the tyres hold, so the car slides and spins. With the assist, the wheel goes straight to the tightest turn the tyres hold at the current speed and centres when you let go. A tap shorter than a simulation tick still counts, and a gamepad stick steers in proportion.
+  - Car fragility (a slider): 100% is the original, where touching a tree or clipping a wall at speed wrecks the car. Lower values let it take harder hits: a wall takes the excess speed instead, the car bounces off trees, posts and corners, and lands back on its wheels after a rollover. At 0% nothing wrecks it; water still ends the race.
 - **Sound:** a synthesized engine, tyres, scrapes and crashes.
 
 ## How it works
@@ -62,6 +65,8 @@ To prove the port faithful, a small 8086 interpreter (`src/x86.js`) runs the ori
 
 The original also has an undocumented behaviour: `update_player_state` reads a few stack variables it never writes, whose value on DOS was effectively random. Here they are defined as zero. This only changes details after a crash.
 
+The two gameplay options (`src/tweaks.js`) are branches in the ports that are only taken when an option is set, so the default game stays the verified original.
+
 The rendering (`src/render.js`) places the original shapes with the original placement rules, but draws them with a modern renderer rather than the original's painter's algorithm.
 
 ## Development
@@ -71,6 +76,7 @@ The tools need Node 22 and the game files in `game/`:
 ```sh
 node tools/trace-all.mjs      # every port vs the original, all scenarios (about 1 min)
 node tools/profile-orig.mjs   # original code still running with the ports on (should be none)
+node tools/test-tweaks.mjs    # steering assist and car fragility
 node tools/world.mjs          # play DEFAULT.RPL headless and print a summary
 ```
 

@@ -1,5 +1,6 @@
 // Menu screens (DOM). main.js passes an `app` object with the game actions and state.
 import { bitmap, text, OPPONENTS } from './art.js';
+import { describeTweaks } from './tweaks.js';
 
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
@@ -35,6 +36,16 @@ export function initUI(app) {
   $('m-track').onclick = () => { show('tracks'); renderTracks(); };
   $('m-enhanced').checked = app.settings.enhanced;
   $('m-enhanced').onchange = e => { app.settings.enhanced = e.target.checked; app.save(); };
+  // Tweaks to the simulation (tweaks.js), applied from the next race on.
+  $('m-assist').checked = app.settings.assist;
+  $('m-assist').onchange = e => { app.settings.assist = e.target.checked; app.save(); updateSummary(); };
+  const fragility = () => {
+    const f = app.settings.fragility;
+    $('m-fragility-val').textContent = `${f}%${f === 100 ? ' (original)' : f === 0 ? ' (indestructible)' : ''}`;
+  };
+  $('m-fragility').value = app.settings.fragility;
+  $('m-fragility').oninput = e => { app.settings.fragility = +e.target.value; app.save(); fragility(); updateSummary(); };
+  fragility();
   $('m-replay').onchange = async e => {
     const f = e.target.files[0];
     if (f) app.startReplay(new Uint8Array(await f.arrayBuffer()));
@@ -45,7 +56,7 @@ export function initUI(app) {
   function updateSummary() {
     const s = app.settings;
     $('m-summary').textContent = `${app.carName(s.car)} · ${s.manual ? 'manual' : 'automatic'} · ` +
-      `${s.opponent ? app.oppName(s.opponent) : 'no opponent'} · ${s.track}`;
+      `${s.opponent ? app.oppName(s.opponent) : 'no opponent'} · ${s.track}` + (describeTweaks(s) && ` · ${describeTweaks(s)}`);
   }
   updateSummary();
 
@@ -112,6 +123,7 @@ export function showResults(app, r) {
     ['Result', r.finished ? 'Finished' : r.drowned ? 'Drowned' : 'Crashed'],
     ...(r.finished ? [['Time', r.time], ['Penalty', r.penalty || 'none']] : []),
     ['Top speed', `${r.topSpeed} mph`], ['Jumps', r.jumps], ['Impact speed', r.impact ? `${r.impact} mph` : '—'],
+    ...(r.tweaks ? [['Options', r.tweaks]] : []),
   ];
   if (r.opponent) rows.push([r.opponent.name, r.opponent.time ?? (r.opponent.crashed ? 'crashed' : 'did not finish')]);
   $('res-table').replaceChildren(...rows.map(([k, v]) => el('tr', {}, el('th', { textContent: k }), el('td', { textContent: v }))));
@@ -126,6 +138,7 @@ export function showResults(app, r) {
   }
   $('res-hi').replaceChildren(...r.highscores.map((h, i) => el('tr', { className: h.current ? 'on' : '' },
     el('td', { textContent: i + 1 }), el('td', { textContent: h.time }), el('td', { textContent: h.car }), el('td', { textContent: h.date }))));
+  $('res-hi-note').textContent = r.tweaks && `With ${r.tweaks}.`;
   $('res-hi-wrap').hidden = !r.highscores.length;
   $('res-replay').onclick = () => app.viewReplay();
   $('res-save').onclick = () => app.saveReplay();

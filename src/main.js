@@ -12,6 +12,7 @@ import { initUI, show, showResults } from './ui.js';
 import { createEditor } from './editor.js';
 import { enablePorts } from './ports.js';
 import { initAudio, updateAudio, setMuted, isMuted } from './audio.js';
+import { tweaks, setTweaks, isDefault, describeTweaks, replayTrailer, DEFAULTS } from './tweaks.js';
 
 const CARS = ['COUN', 'ANSX', 'AUDI', 'FGTO', 'JAGU', 'LANC', 'LM02', 'P962', 'PC04', 'PMIN', 'VETT'];
 const GAME_FILES = ['GAME.EXE', 'GAME1.P3S', 'GAME2.P3S', 'GAME.PRE', 'SDMAIN.PVS', 'SDTITL.PVS', 'SDOSEL.PVS', 'DEFAULT.TRK', 'DEFAULT.RPL',
@@ -117,7 +118,8 @@ function resize() {
 addEventListener('resize', resize);
 
 // --- Settings, tracks, highscores ---------------------------------------------------------
-const settings = Object.assign({ car: 'COUN', paint: 0, manual: false, opponent: 0, oppCar: 'PMIN', track: 'DEFAULT', enhanced: true }, store.get('settings', {}));
+const settings = Object.assign({ car: 'COUN', paint: 0, manual: false, opponent: 0, oppCar: 'PMIN', track: 'DEFAULT', enhanced: true,
+  assist: false, fragility: 100 }, store.get('settings', {})); // assist, fragility: the tweaks (tweaks.js)
 fx.enabled = settings.enhanced || params.has('enhanced');
 const tracks = store.get('tracks', {}); // name -> base64 of the 1802-byte .TRK
 const b64 = { enc: u => btoa(String.fromCharCode(...u)), dec: s => Uint8Array.from(atob(s), c => c.charCodeAt(0)) };
@@ -172,6 +174,8 @@ function configure() {
 function startRace() {
   loadTrack(feed ? feed.subarray(0x1a, 0x1a + 1802) : trackBytes(settings.track));
   configure();
+  setTweaks(params.has('original') ? DEFAULTS : settings); // the tweaks live in the ports
+  tapped.clear();
   M.fill(0, td('td16_rpl_buffer'), td('td16_rpl_buffer') + 0x2ee0);
   try { setupRace(20); } catch (e) { alert('This track is not valid: ' + e.message); return toMenu(); }
   G.byte_449DA = 0;
@@ -213,18 +217,23 @@ function hideMenus() {
   $('replaybar').hidden = true;
 }
 
-// The race's replay bytes: header (GAMEINFO), track, inputs.
+// The race's replay bytes: header (GAMEINFO), track, inputs, and the tweaks it was driven with.
 function replayBytes() {
   const hdr = td('td13_rpl_header');
   M.copyWithin(hdr, A.gameconfig, A.gameconfig + 0x1a);
-  return M.slice(hdr, hdr + 0x1a + 1802 + gameconfig.game_recordedframes);
+  const size = 0x1a + 1802 + gameconfig.game_recordedframes, trailer = replayTrailer(), bytes = new Uint8Array(size + trailer.length);
+  bytes.set(M.subarray(hdr, hdr + size));
+  bytes.set(trailer, size);
+  return bytes;
 }
 
 // --- Input --------------------------------------------------------------------------------
 const keys = new Set();
+const tapped = new Set(); // steering assist: keys pressed since the last tick, so that a tap shorter than a tick counts
 addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   keys.add(e.code);
+  if (tweaks.assist) tapped.add(e.code);
   if (e.code === 'KeyC' && mode !== 'attract') camMode = (camMode + 1) % 3;
   if (e.code === 'Escape') {
     if (mode === 'race' || mode === 'finishing') toMenu();
@@ -246,12 +255,29 @@ function padByte() {
   const p = navigator.getGamepads?.().find(g => g?.mapping === 'standard');
   if (!p) return 0;
   const b = i => p.buttons[i]?.pressed || p.buttons[i]?.value > 0.3;
-  return (b(7) || b(0) ? 1 : 0) | (b(6) || b(1) ? 2 : 0) | (p.axes[0] > 0.35 || b(15) ? 4 : 0) |
-    (p.axes[0] < -0.35 || b(14) ? 8 : 0) | (b(5) ? 0x10 : 0) | (b(4) ? 0x20 : 0);
+  const x = p.axes[0] ?? 0, analog = tweaks.assist && !b(14) && !b(15);
+  return (b(7) || b(0) ? 1 : 0) | (b(6) || b(1) ? 2 : 0) | (analog ? stickSteer(x) : (x > 0.35 || b(15) ? 4 : 0) | (x < -0.35 || b(14) ? 8 : 0)) |
+    (b(5) ? 0x10 : 0) | (b(4) ? 0x20 : 0);
 }
-const inputByte = () => feed ? feed[0x1a + 1802 + (G.game_replay_mode === 1 ? 0 : state.game_frame)] ?? 0 :
-  (keys.has('ArrowUp') || params.has('auto') ? 1 : 0) | (keys.has('ArrowDown') ? 2 : 0) |
-  (keys.has('ArrowRight') ? 4 : 0) | (keys.has('ArrowLeft') ? 8 : 0) | (keys.has('KeyA') ? 0x10 : 0) | (keys.has('KeyZ') ? 0x20 : 0) | padByte();
+// Steering assist: the stick steers in proportion. The input byte has room for quarters of the
+// deflection (bits 6-7: 0 full, 1..3: 3/4, 1/2, 1/4); the remainder carries over to the next
+// ticks, which alternate between two quarters for the values in between.
+let stickRest = 0;
+function stickSteer(x) {
+  stickRest += Math.min(1, Math.max(0, (Math.abs(x) - 0.12) / 0.8)) * 4; // dead zone 0.12, full lock from 0.92
+  const quarters = Math.min(4, Math.floor(stickRest));
+  stickRest -= quarters;
+  return quarters ? (x > 0 ? 4 : 8) | ((4 - quarters) << 6) : 0;
+}
+function inputByte() {
+  if (feed) return feed[0x1a + 1802 + (G.game_replay_mode === 1 ? 0 : state.game_frame)] ?? 0;
+  const down = code => keys.has(code) || tapped.has(code);
+  const b = (down('ArrowUp') || params.has('auto') ? 1 : 0) | (down('ArrowDown') ? 2 : 0) |
+    (down('ArrowRight') ? 4 : 0) | (down('ArrowLeft') ? 8 : 0) | (down('KeyA') ? 0x10 : 0) | (down('KeyZ') ? 0x20 : 0);
+  tapped.clear();
+  const pad = padByte();
+  return b | (b & 12 ? pad & 0x3f : pad); // the keyboard steers at full deflection
+}
 
 // --- Simulation tick (run_game's loop) ------------------------------------------------------
 function tick() {
@@ -282,6 +308,8 @@ function finishRace() {
     finished: p.car_crashBmpFlag === 3, drowned: p.car_crashBmpFlag === 2,
     frames: state.game_total_finish, penaltyFrames: state.game_penalty,
     topSpeed: Math.round(state.game_topSpeed / 256), jumps: state.game_jumpCount, impact: Math.round(state.game_impactSpeed / 256),
+    // Best times are kept per track, and apart for each combination of tweaks.
+    tweaks: describeTweaks(), hiKey: isDefault() ? 'hi.' + settings.track : `hi:${tweaks.assist ? 'a' : ''}${tweaks.fragility}:${settings.track}`,
   };
   mode = gameconfig.game_opponenttype && state.opponentstate.car_crashBmpFlag === 0 ? 'finishing' : 'results';
   if (mode === 'finishing') $('status').textContent = 'Waiting for your opponent…';
@@ -309,7 +337,7 @@ function finishToResults() {
       decided: oppDone || result.finished }; // nobody finished: no winner, no reaction
   }
   if (result.finished) {
-    const key = 'hi.' + settings.track, list = store.get(key, []);
+    const key = result.hiKey, list = store.get(key, []);
     const entry = { frames: result.frames, fps, car: carNames[settings.car], date: new Date().toLocaleDateString(), at: Date.now() };
     list.push(entry); list.sort((a, b) => a.frames / a.fps - b.frames / b.fps); list.length = Math.min(list.length, 10);
     store.set(key, list);
@@ -541,7 +569,7 @@ else toMenu();
 $('status').textContent = '';
 // Debugging/testing handle (tools/browse.mjs): stunts.ff(n) runs n ticks at once.
 window.stunts = {
-  app, state, G, getFile, scene, fx,
+  app, state, G, getFile, scene, fx, tweaks, inputByte,
   get mode() { return mode; },
   ff(n) { for (let i = 0; i < n && mode !== 'results'; i++) { tick(); advancePoses(); } return state.game_frame; },
   // Height of the rendered track under each physics wheel contact point (should match wheel y).

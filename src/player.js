@@ -6,6 +6,7 @@ import { call, provide, defineSigs, isEnabled, setNextReturn } from './calls.js'
 import { cpu, procPtr } from './engine.js';
 import { origStack, retAddr } from './stack.js';
 import * as m from './math.js';
+import { tweaks, crashLimit, survives } from './tweaks.js';
 
 defineSigs({ audio_unk3: 'ww', state_op_unk: 'www', audio_op_unk2: 'wwwwwwwww', sub_18D06: 'nw' });
 
@@ -90,6 +91,22 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
   const c1 = (to, nth, ...a) => invoke(st, 'update_player_state', to, nth, ...a);
   const c2 = (to, nth, ...a) => invoke(st, 'code_update_rotCoords', to, nth, ...a);
   const crash = (n, c, nth) => c('update_crash_state', nth, n, fl);
+  // Fragility tweak, for the player's car only (the opponent keeps the original's limits): scaled
+  // crash thresholds, and whether the car survives a hit that always wrecks the original. If so,
+  // it climbs the edge of a deck (wheels) or passes through its surface (roof); it bounces back
+  // from an obstacle or a corner (this tick is undone, the car put 16 units back and stopped); on
+  // its roof, it lands back on its wheels.
+  const limit = t0 => (flag === 0 ? crashLimit(t0) : t0);
+  const tough = () => flag === 0 && survives(p.car_speed2);
+  const before = flag === 0 && tweaks.fragility < 100 ? M.slice(pState, pState + CARSTATE.size) : null;
+  const bounceBack = () => {
+    M.set(before, pState);
+    setv(V1C6, 0, 0, -0x400);
+    m.mat_mul_vector(V1C6, A.mat_unk, VFC);
+    addlv(p.$car_posWorld1, VFC);
+    p.car_speed = p.car_speed2 = 0;
+    p.field_CF |= 0x30; // scrape and thud sounds
+  };
   // Locals at their original frame offsets.
   const V1E4 = L(0x1e4), V1DE = L(0x1de), V1C6 = L(0x1c6), L1C0 = L(0x1c0), V18E = L(0x18e), V182 = L(0x182),
     V17C = L(0x17c), L176 = L(0x176), WHL = L(0x140), MAT134 = L(0x134), V122 = L(0x122), V11A = L(0x11a),
@@ -182,10 +199,10 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
     let a = (-y1() - ee) & 0x3ff, neg = false;
     if (a > 0x100) { a = 0x400 - a; neg = true; }
     const maxSpeed = ((0x64 - (s16(0x46 * a) >> 8)) & 0xff) << 8; // head-on hits crash at lower speed
-    if (p.car_speed2 > maxSpeed) {
+    if (p.car_speed2 > limit(maxSpeed)) {
       p.car_36MwhlAngle = (neg ? -a : a) << 1;
       crash(1, c1, 2);
-    }
+    } else if (p.car_speed2 > maxSpeed) p.car_speed = p.car_speed2 = maxSpeed; // tougher car: the wall takes the excess speed
     p.field_CF |= 0x10;
     for (let i = 0; i < 4; i++) {
       const a1 = L1C0 + 12 * i, a0 = L176 + 12 * i;
@@ -217,8 +234,7 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
         G.nextPosAndNormalIP = m.plane_origin_op(0, rsw(V1C6), rsw(V1C6 + 2), rsw(V1C6 + 4));
         return true;
       }
-      crash(5, c1, 3);
-      deep = 1;
+      if (!tough()) { crash(5, c1, 3); deep = 1; } // the edge of a deck
     }
     const plRot = (z, whl, nth) => {
       setv(A.vec_unk2, 0, 0, z);
@@ -280,7 +296,7 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
       if (np < 0 && belowPlane(w)) continue;
       // On the ground: rc1 is the vertical speed it landed with.
       if (rsw(rc1 + 2 * w) > 0xfa) p.field_CF |= 0x20;
-      if (rsw(rc1 + 2 * w) > 0x5aeb) crash(1, c1, 4);
+      if (rsw(rc1 + 2 * w) > limit(0x5aeb)) crash(1, c1, 4);
       ww(rc1 + 2 * w, 0);
       return;
     }
@@ -289,7 +305,10 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
   // Passes over the 4 wheels, restarted after each wall hit; the 5th restart gives up (crash).
   for (let pass = 1; ; pass++) {
     wb(L(2), pass); // var_2
-    if (pass === 5) { p.car_36MwhlAngle = 0x200; crash(1, c1, 0); break; }
+    if (pass === 5) {
+      if (tough()) return bounceBack();
+      p.car_36MwhlAngle = 0x200; crash(1, c1, 0); break;
+    }
     let restart = false;
     for (let w = 0; w < 4 && !restart; w++) {
       const l1 = L1C0 + 12 * w;
@@ -360,13 +379,24 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
   if (!inputmode2()) {
     if (U.is_in_replay === 0) c2('audio_unk3', 0, p.field_CF & 0xff, flag ? U.word_4408C : U.word_43964);
     // Wheel-to-wheel check against plane changes (e.g. going through a road surface): crash.
+    // roofPoint: V1C6 = the point above wheel w at the car's height.
+    const roofPoint = (w, mat) => {
+      cpv(V1C6, pSimd + SO.wheel_coords + 6 * w);
+      ww(V1C6 + 2, rsw(pSimd + SO.collide_points + 2) << 6);
+      m.mat_mul_vector(V1C6, mat, VFC);
+      setv(V1C6, (rsw(VFC) + G.pState_lvec1_x) >> 6, (rsw(VFC + 2) + G.pState_lvec1_y) >> 6, (rsw(VFC + 4) + G.pState_lvec1_z) >> 6);
+    };
+    // The roof hit the ground or went through a road surface: crash, unless the car is tough
+    // enough. If it is upside down, it then lands on its wheels.
+    let roll = false;
+    const roofHit = () => {
+      if (!roll && !tough()) return crash(5, c2, 0);
+      if (G.planindex < 4 || (m.cos_fast(z1()) < 0) !== (m.cos_fast(x1()) < 0)) roll = true;
+    };
     const ea = m.mat_rot_zxy(s16(-z1()), s16(-x1()), s16(-y1()), 0);
     for (let w = 0; w < 4; w++) {
       const wc2 = p.$car_whlWorldCrds2 + 6 * w;
-      cpv(V1C6, pSimd + SO.wheel_coords + 6 * w);
-      ww(V1C6 + 2, rsw(pSimd + SO.collide_points + 2) << 6);
-      m.mat_mul_vector(V1C6, ea, VFC);
-      setv(V1C6, (rsw(VFC) + G.pState_lvec1_x) >> 6, (rsw(VFC + 2) + G.pState_lvec1_y) >> 6, (rsw(VFC + 4) + G.pState_lvec1_z) >> 6);
+      roofPoint(w, ea);
       cpv(V17C, V1C6);
       c2('build_track_object', 1, V1C6, wc2);
       const h = m.plane_origin_op(G.planindex, rsw(V1C6), rsw(V1C6 + 2), rsw(V1C6 + 4));
@@ -376,10 +406,20 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
         c2('build_track_object', 0, V1C6, V17C);
         if (G.planindex === pi) {
           const h0 = m.plane_origin_op(G.planindex, rsw(V1C6), rsw(V1C6 + 2), rsw(V1C6 + 4));
-          if (U.game_replay_mode !== 1 && ((h < 0 && h0 > 0) || (h > 0 && h0 < 0))) crash(5, c2, 0);
+          if (U.game_replay_mode !== 1 && ((h < 0 && h0 > 0) || (h > 0 && h0 < 0))) roofHit();
         }
-      } else if (h <= 0) crash(5, c2, 0);
+      } else if (h <= 0) roofHit();
       cpv(wc2, V17C);
+    }
+    if (roll) {
+      // Upright, heading the way the car is moving, at half the speed.
+      const dx = G.pState_lvec1_x - rsd(pos), dz = G.pState_lvec1_z - rsd(pos + 8);
+      if (Math.abs(dx) + Math.abs(dz) > 64) G.pState_minusRotate_y_1 = m.polarAngle(s16(-dx), s16(dz), 0) & 0x3ff;
+      G.pState_minusRotate_z_1 = G.pState_minusRotate_x_1 = 0;
+      p.car_speed = p.car_speed2 = p.car_speed2 >> 1;
+      p.car_36MwhlAngle = p.car_angle_z = 0;
+      const up = m.mat_rot_zxy(0, 0, s16(-y1()), 0);
+      for (let w = 0; w < 4; w++) { roofPoint(w, up); cpv(p.$car_whlWorldCrds2 + 6 * w, V1C6); }
     }
 
     const all = s8(p.car_sumSurfFrontWheels + p.car_sumSurfRearWheels);
@@ -407,7 +447,10 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
       const n = c2('bto_auxiliary1', 0, tx, tz, VDC) & 0xff;
       for (let i = 0; i < n; i++) {
         cpv(V18E, VDC + 6 * i);
-        if (coll(1, A.unk_3BD6A, V18E)) { p.car_36MwhlAngle = p.car_36MwhlAngle - 0x200; crash(1, c2, 2); return; }
+        if (coll(1, A.unk_3BD6A, V18E)) {
+          if (tough()) return bounceBack();
+          p.car_36MwhlAngle = p.car_36MwhlAngle - 0x200; crash(1, c2, 2); return;
+        }
       }
       const cp = rsb(farptrAt(A.trackdata19, rw(A.trackrows + 2 * tz) + tx));
       if (cp !== -1 && rsb(state.$field_3FA + cp) === 0) {
@@ -424,7 +467,10 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
           return coll(nth, A.unk_3BD62, V18E);
         };
         ww(V18E + 2, rsw(A.hillHeightConsts + 2 * G.hillFlag));
-        if (post(0x100, 3) || post(0x300, 4)) { crash(1, c2, 2); return; }
+        if (post(0x100, 3) || post(0x300, 4)) {
+          if (tough()) return bounceBack();
+          crash(1, c2, 2); return;
+        }
       }
     }
   }
@@ -458,7 +504,7 @@ export function player_op(input) {
     const inp = s8(input);
     const c = (to, nth, ...a) => invoke(st, 'player_op', to, nth, ...a);
     c('update_car_speed', 0, u16(inp), 0, ps.addr, A.simd_player);
-    c('upd_statef20_from_steer_input', 0, (inp >> 2) & 3);
+    c('upd_statef20_from_steer_input', 0, ((inp >> 2) & 3) | (tweaks.assist ? inp & 0xc0 : 0)); // assist: stick deflection
     c('update_grip', 0, ps.addr, A.simd_player, 1);
     c('update_player_state', 0, ps.addr, A.simd_player, state.$opponentstate, A.simd_opponent, 0);
     state.game_travDist = state.game_travDist + ps.car_speed2;

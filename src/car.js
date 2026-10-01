@@ -7,6 +7,7 @@ import { sin_fast, cos_fast, multiply_and_scale, polarRadius2D, polarAngle } fro
 import { call, provide, defineSigs, isEnabled } from './calls.js';
 import { origStack } from './stack.js';
 import { cpu } from './engine.js';
+import { tweaks, assistedSteering, crashLimit } from './tweaks.js';
 
 defineSigs({ state_op_unk: 'www', audio_function2_wrap: 'w' });
 
@@ -178,9 +179,10 @@ export function update_rpm_from_speed(currpm, speed, gearratio, changingGear, id
   return rpm < u16(idleRpm) ? u16(idleRpm) : rpm;
 }
 
-// upd_statef20_from_steer_input: player steering angle from the steering input (1 left, 2 right),
-// through the speed-dependent steering response table.
+// upd_statef20_from_steer_input: player steering angle from the steering input (1 right, 2 left),
+// through the speed-dependent steering response table. The steering assist tweak replaces it.
 export function upd_statef20_from_steer_input(input) {
+  if (tweaks.assist) return assistedSteering(state.playerstate, A.simd_player, input, G.framespersec);
   const st = origStack('upd_statef20_from_steer_input');
   st.enter(6, cpu.di, cpu.si);
   const p = state.playerstate;
@@ -340,7 +342,8 @@ export function update_grip(carState, simd, detailed) {
 }
 
 // car_car_speed_adjust_maybe: speed loss and deflection when the two cars collide.
-// Returns 1 when the impact is hard (relative velocity > 30), which crashes both cars.
+// Returns 1 when the impact is hard (relative velocity > 30, scaled by the fragility tweak), which
+// crashes both cars.
 export function car_car_speed_adjust_maybe(oState, pState) {
   const st = origStack('car_car_speed_adjust_maybe');
   st.enter(0x18, cpu.si);
@@ -389,7 +392,7 @@ export function car_car_speed_adjust_maybe(oState, pState) {
   deflect(p, oAngle - pAngle);
   o.car_speed = o.car_speed2;
   p.car_speed = p.car_speed2;
-  return impact > 30 ? 1 : 0;
+  return impact > crashLimit(30) ? 1 : 0;
 }
 
 // carState_rc_op: suspension travel of one wheel. rc2 = current travel, rc5 = rest target

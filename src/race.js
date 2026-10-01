@@ -5,6 +5,7 @@ import { GAMESTATE, state, gameconfig } from './structs.js';
 import { installStubs } from './engine.js';
 import { callTop } from './calls.js';
 import { enableStubs } from './stubs.js';
+import { setTweaks, replayTweaks } from './tweaks.js';
 
 // init_trackdata: one 'trakdata' block split into the td pointers (restunts.c).
 const TD = [['td01_track_file_cpy', 0x70a], ['td02_penalty_related', 0x70a], ['trackdata3', 0x70a], ['td04_aerotable_pl', 0x80],
@@ -54,11 +55,13 @@ export const carId = arr => String.fromCharCode(...[0, 1, 2, 3].map(i => arr[i])
 
 // .TRK: 901 element bytes + 901 terrain bytes.
 export function loadTrack(bytes) { M.set(bytes.subarray(0, 1802), td('td14_elem_map_main')); }
-// .RPL: 26-byte GAMEINFO header, track, then one input byte per frame. Returns frame count.
+// .RPL: 26-byte GAMEINFO header, track, then one input byte per frame, then the tweaks the race
+// was driven with, if any (tweaks.js), which are set for the playback. Returns frame count.
 export function loadReplay(bytes) {
   M.fill(0, td('td16_rpl_buffer'), td('td16_rpl_buffer') + 0x2ee0);
-  M.set(bytes, td('td13_rpl_header'));
+  M.set(bytes.subarray(0, 0x1a + 1802 + 0x2ee0), td('td13_rpl_header'));
   M.copyWithin(A.gameconfig, td('td13_rpl_header'), td('td13_rpl_header') + 0x1a);
+  setTweaks(replayTweaks(bytes, 0x1a + 1802 + gameconfig.game_recordedframes));
   return gameconfig.game_recordedframes;
 }
 
