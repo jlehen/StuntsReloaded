@@ -3,6 +3,7 @@
 // big corners, hills, bridges, jumps, split roads; broken variants; random garbage) so that every
 // track_setup error path runs. usage: node tools/test-track.mjs [trace]
 import { M, A, G, rw, ww, farptr, heapMark, heapReset } from '../src/mem.js';
+import { MS } from '../src/version.js';
 import { oracle, compare, rnd } from './difftest.mjs';
 import { gameFile, bootWorld } from './oracle.mjs';
 import { loadTrack, setupRace, step, gameconfig, state } from '../src/race.js';
@@ -286,7 +287,7 @@ function perturb() {
   o.car_36MwhlAngle = pick([0, 0, 0, rnd(1, 100)]); o.car_slidingFlag = pick([0, 0, 1]);
   o.car_sumSurfFrontWheels = pick([0, 2, 2]); o.car_sumSurfRearWheels = pick([0, 2, 2]);
   o.car_demandedGrip = rnd(0, 400); o.car_surfacegrip_sum = rnd(0, 400); o.car_steeringAngle = rnd(-0x60, 0x60);
-  state.game_inputmode = pick([0, 0, 2]); G.framespersec = pick([20, 20, 10]); state.field_3F9 = rnd(0, 255);
+  state.game_inputmode = pick([0, 0, 2]); if (!MS) G.framespersec = pick([20, 20, 10]); state.field_3F9 = rnd(0, 255);
   p.car_crashBmpFlag = pick([0, 0, 1]); o.field_CD = pick([0, 0, 1]);
   if (!rnd(0, 4)) ww(o.$car_vec_unk3 + 2, -1);
 }

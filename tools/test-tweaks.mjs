@@ -13,7 +13,7 @@ import { bootWorld, gameFile } from './oracle.mjs';
 import { SCENARIOS } from './trace.mjs';
 import { enablePorts } from '../src/ports.js';
 import { callTop } from '../src/calls.js';
-import { loadReplay, loadTrack, setupRace, step, gameconfig, td } from '../src/race.js';
+import { loadReplay, loadTrack, setupRace, step, gameconfig, td, RPL_HEADER } from '../src/race.js';
 import { tweaks, setTweaks, replayTrailer, replayTweaks, crashLimit, survives, DEFAULTS } from '../src/tweaks.js';
 
 enablePorts();
@@ -38,7 +38,7 @@ const start = (sc, t) => { bootWorld(); sc.setup(); setTweaks(t); setupRace(sc.f
     const bytes = Uint8Array.of(1, 2, 3, ...replayTrailer(t)), back = replayTweaks(bytes, 3);
     if (back.assist !== t.assist || back.fragility !== t.fragility) fails.push('replay trailer ' + JSON.stringify(t));
   }
-  if (replayTrailer(DEFAULTS).length || replayTweaks(gameFile('DEFAULT.RPL'), 0x1a + 1802 + 1798) !== DEFAULTS) fails.push('plain replays have no trailer');
+  if (replayTrailer(DEFAULTS).length || replayTweaks(gameFile('DEFAULT.RPL'), gameFile('DEFAULT.RPL').length) !== DEFAULTS) fails.push('plain replays have no trailer');
   check('limits and replay trailer', fails);
 }
 
@@ -91,7 +91,8 @@ const start = (sc, t) => { bootWorld(); sc.setup(); setTweaks(t); setupRace(sc.f
     p.car_posWorld1.lx = x << 6; p.car_posWorld1.lz = z << 6; p.car_posWorld1.ly += up << 6;
     p.car_rotate.x = yaw; p.car_rotate.y = pitch; p.car_rotate.z = roll;
     p.car_speed = p.car_speed2 = mph << 8;
-    for (let i = 0; i < 4; i++) for (const w of [p.car_whlWorldCrds1[i], p.car_whlWorldCrds2[i]]) { w.x = x; w.y = p.car_posWorld1.ly >> 6; w.z = z; }
+    // Wheel positions of the tick before (the Mindscape build keeps one array of them, not two).
+    for (let i = 0; i < 4; i++) for (const w of [p.car_whlWorldCrds1, p.car_whlWorldCrds2].filter(Boolean).map(a => a[i])) { w.x = x; w.y = p.car_posWorld1.ly >> 6; w.z = z; }
   };
   const run = (frames, input) => { for (let f = 0; f < frames && P().car_crashBmpFlag === 0; f++) step(typeof input === 'function' ? input(f) : input); };
   const pos = () => [P().car_posWorld1.lx >> 6, P().car_posWorld1.lz >> 6];
@@ -191,8 +192,8 @@ const start = (sc, t) => { bootWorld(); sc.setup(); setTweaks(t); setupRace(sc.f
     // The .RPL as main.js writes it: header, track, inputs, trailer.
     gameconfig.game_recordedframes = n;
     const hdr = td('td13_rpl_header');
-    M.copyWithin(hdr, A.gameconfig, A.gameconfig + 0x1a);
-    const rpl = Uint8Array.of(...M.subarray(hdr, hdr + 0x1a + 1802 + n), ...replayTrailer(t));
+    M.copyWithin(hdr, A.gameconfig, A.gameconfig + RPL_HEADER);
+    const rpl = Uint8Array.of(...M.subarray(hdr, hdr + RPL_HEADER + 1802 + n), ...replayTrailer(t));
     bootWorld();
     setTweaks(DEFAULTS);
     if (loadReplay(rpl) !== n || !tweaks.assist || tweaks.fragility !== 20) fails.push(`${sc.name}: replay not loaded with its tweaks`);

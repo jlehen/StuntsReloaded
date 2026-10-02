@@ -5,10 +5,10 @@ import * as THREE from '../vendor/three.module.js';
 // Wheel surface (car_surfaceWhl, current_surf_type): 0 air, 1 paved, 2 dirt, 3 ice, 4 grass, 5 water.
 // Skid mark colour/alpha, whether it needs sliding, and the particle that comes off the wheel.
 const SURF = {
-  1: { mark: [0.02, 0.02, 0.02, 0.6], slideOnly: true, puff: [0.85, 0.85, 0.85], puffA: 0.5 },
-  2: { mark: [0.16, 0.09, 0.04, 0.55], slideOnly: false, puff: [0.55, 0.38, 0.22], puffA: 0.35 },
-  3: { mark: [0.85, 0.92, 1.0, 0.4], slideOnly: true, puff: [0.92, 0.96, 1.0], puffA: 0.45 },
-  4: { mark: [0.04, 0.1, 0.02, 0.45], slideOnly: false, puff: [0.35, 0.42, 0.18], puffA: 0.22 },
+  1: { mark: [0.02, 0.02, 0.02, 0.6], slideOnly: true, puff: [0.8, 0.8, 0.8], puffA: 0.3 },
+  2: { mark: [0.16, 0.09, 0.04, 0.55], slideOnly: false, puff: [0.55, 0.38, 0.22], puffA: 0.3 },
+  3: { mark: [0.85, 0.92, 1.0, 0.4], slideOnly: true, puff: [0.92, 0.96, 1.0], puffA: 0.3 },
+  4: { mark: [0.04, 0.1, 0.02, 0.45], slideOnly: false, puff: [0.3, 0.38, 0.16], puffA: 0.16 },
   5: { mark: null, slideOnly: false, puff: [0.9, 0.95, 1.0], puffA: 0.6 },
 };
 const MARK_W = 7, MAX_SEG = 6000;
@@ -149,7 +149,7 @@ export function createEffects() {
         // Smoke only while sliding on tarmac/ice; dust and grass always, more with speed and sliding.
         const rate = (sliding ? 1 : s.slideOnly ? 0 : Math.min(1, speed / 0x3000) * 0.5) * (i >= 2 ? 1 : 0.6);
         if (Math.random() < rate) smoke.spawn({ x: a.clone().addScaledVector(up, 6), v: vel.clone().multiplyScalar(0.15).add(jitter(40)).addScaledVector(up, 30 + Math.random() * 40),
-          life: 1.2 + Math.random() * 1.5, s0: 12, s1: sliding ? 100 : 60, c: s.puff, a: s.puffA * (sliding ? 1 : 0.5), seed: Math.random(), drag: 1.2, lift: true });
+          life: 0.9 + Math.random() * 1.1, s0: 8, s1: sliding ? 38 : 30, c: s.puff, a: s.puffA * (sliding ? 0.7 : 0.5), seed: Math.random(), drag: 1.2, lift: true });
       }
       if (cs.field_CF & 0x10 && speed > 0x400) for (let i = 0; i < 4; i++) // scraping a wall
         glow.spawn({ x: at.clone().add(jitter(25)), v: vel.clone().multiplyScalar(0.6).add(jitter(200)).setY(Math.random() * 250),

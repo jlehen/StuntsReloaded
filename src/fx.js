@@ -1,15 +1,16 @@
 // Enhanced graphics (menu option): gradient sky with sun and haze, glossy car paint reflecting it,
 // procedural surfaces (asphalt, grass, dirt, ice, water, concrete), bloom and a colour grade. Rendering only, the simulation is untouched.
 import * as THREE from '../vendor/three.module.js';
-import { EffectComposer } from '../vendor/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from '../vendor/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from '../vendor/addons/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from '../vendor/addons/postprocessing/OutputPass.js';
-import { ShaderPass } from '../vendor/addons/postprocessing/ShaderPass.js';
+import { createPost } from './fx-post.js';
 import { createEffects } from './fx-effects.js';
 import { buildScenery, buildClouds } from './fx-scenery.js';
 import { CSM } from '../vendor/addons/csm/CSM.js';
 
+// Light balance: a level surface in the sun shows its original palette colour (the sun is 31° from
+// the zenith: 0.857 * SUN + HEMI = pi), and keeps 0.4 of it in shadow.
+// A weak light from the other side (FILL, from the north-west and low) tells apart the faces
+// the sun does not reach.
+const SUN = 2.2, HEMI = 1.2, FILL = 0.45;
 // Shared uniforms: detail strength (0 = classic look), time (water), and the sky colours.
 const U = {
   uDetail: { value: 0 }, uTime: { value: 0 },
@@ -39,6 +40,7 @@ export const surfaceKind = paint => KIND[PAINT_KIND[paint]] ?? 0;
 const lit = new Set(); // materials that get the surface shader, and the cascaded shadows below
 export function addDetail(material) {
   lit.add(material);
+  material.userData.shaderKey = 'surface'; // programs are cached by this (createFx)
   material.onBeforeCompile = s => {
     Object.assign(s.uniforms, U);
     s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\nattribute float kind;\nvarying vec3 vWPos;\nvarying float vKind;')
@@ -74,9 +76,9 @@ if (uDetail > 0.0) {
   vec3 alb = vec3(0.85 + 0.3 * big);
   if (k == 1) { // asphalt: aggregate grain, darker resurfaced patches
     float grain = vnoise(p / 1.3) * aw(fw, 1.3), patches = smoothstep(0.4, 0.75, fbm3(p / 220.0));
-    alb = vec3(0.82 + 0.3 * big) * mix(1.0, 0.78, patches) * (0.88 + 0.26 * grain);
-    sfH = 0.35 * grain + 0.6 * vnoise(p / 6.0) * aw(fw, 6.0);
-    sfRough = 0.92 - 0.25 * patches;
+    alb = vec3(0.95 + 0.14 * big) * mix(1.0, 0.87, patches) * (0.93 + 0.14 * grain);
+    sfH = 0.2 * grain + 0.3 * vnoise(p / 6.0) * aw(fw, 6.0);
+    sfRough = 0.92 - 0.2 * patches;
   } else if (k == 2) { // paint: worn through in places
     float wear = smoothstep(0.55, 0.85, vnoise(p / 6.0)) * aw(fw, 6.0);
     alb = vec3(1.0 - 0.4 * wear);
@@ -95,9 +97,9 @@ if (uDetail > 0.0) {
   } else if (k == 5) { // grass: tufts, dry and lush patches
     float tuft = vnoise(p * vec3(1.1, 0.4, 1.1)) * aw(fw, 1.0);
     float dry = smoothstep(0.5, 0.8, fbm3(p / 700.0 + 3.0));
-    float mow = mix(0.94, 1.06, smoothstep(0.45, 0.55, abs(fract(p.x / 1024.0) - 0.5) * 2.0)); // stripes along the tile grid
-    alb = mow * (0.78 + 0.4 * big) * (0.84 + 0.32 * mid) * mix(vec3(1.0), vec3(1.3, 1.12, 0.55), 0.55 * dry) * (0.86 + 0.28 * tuft);
-    sfH = 0.6 * tuft + 1.2 * vnoise(p / 8.0) * aw(fw, 8.0);
+    float mow = mix(0.97, 1.03, smoothstep(0.45, 0.55, abs(fract(p.x / 1024.0) - 0.5) * 2.0)); // stripes along the tile grid
+    alb = mow * (0.9 + 0.22 * big) * (0.92 + 0.18 * mid) * mix(vec3(1.0), vec3(1.22, 1.1, 0.7), 0.4 * dry) * (0.92 + 0.18 * tuft);
+    sfH = 0.4 * tuft + 0.7 * vnoise(p / 8.0) * aw(fw, 8.0);
     sfRough = 0.95;
   } else if (k == 6) { // water: moving ripples, sky reflection
     vec2 q = p.xz;
@@ -133,7 +135,7 @@ if (uDetail > 0.0) normal = sfPerturb(-vViewPosition, normal, vec2(dFdx(sfH), dF
 }
 
 export function createFx({ renderer, scene, skyScene, camera, sun, hemi, carMaterial, ground, groundColor }) {
-  const classic = { background: skyScene.background, fog: scene.fog, hemi: hemi.intensity, hemiColor: hemi.color.getHex(), sun: sun.intensity, sunColor: sun.color.getHex(), far: camera.far };
+  const classic = { background: skyScene.background, fog: scene.fog, hemi: hemi.intensity, hemiColor: hemi.color.getHex(), hemiGround: hemi.groundColor.getHex(), sun: sun.intensity, sunColor: sun.color.getHex(), far: camera.far };
   const fog = new THREE.Fog(U.uHorizon.value, 3000, 100000); // haze over the distant scenery
   U.uGround.value.copy(groundColor).lerp(U.uHorizon.value, 0.65); // ground seen past the far plane
 
@@ -158,28 +160,7 @@ void main() {
     new THREE.Mesh(new THREE.CircleGeometry(60, 32).rotateX(-Math.PI / 2).translate(0, -2, 0), new THREE.MeshBasicMaterial({ color: 0x2f4a22 })));
   const env = new THREE.PMREMGenerator(renderer).fromScene(envScene, 0.02).texture;
 
-  const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
-  const composer = new EffectComposer(renderer, rt);
-  const worldPass = new RenderPass(scene, camera);
-  Object.assign(worldPass, { clear: false, clearDepth: true });
-  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.22, 0.5, 0.92);
-  composer.addPass(new RenderPass(skyScene, camera));
-  composer.addPass(worldPass);
-  composer.addPass(bloom);
-  composer.addPass(new OutputPass());
-  // Grade (display space): a little more saturation and contrast, and a soft vignette.
-  composer.addPass(new ShaderPass({
-    uniforms: { tDiffuse: { value: null } },
-    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-    fragmentShader: `uniform sampler2D tDiffuse; varying vec2 vUv;
-void main() {
-  vec3 c = texture2D(tDiffuse, vUv).rgb;
-  c = mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, 1.08);
-  c = (c - 0.5) * 1.06 + 0.5;
-  vec2 v = vUv - 0.5;
-  gl_FragColor = vec4(c * (1.0 - 0.55 * dot(v, v)), 1.0);
-}`,
-  }));
+  const post = createPost(renderer);
 
   const effects = createEffects();
   // Distant 3D scenery per track scenery byte, built on first use.
@@ -202,20 +183,26 @@ void main() {
   const csm = new CSM({
     camera, parent: scene, cascades: 4, maxFar: 25000, shadowMapSize: 2048, mode: 'custom',
     customSplitsCallback: (n, near, far, out) => out.push(600 / far, 2500 / far, 8000 / far, 1),
-    lightDirection: U.uSunDir.value.clone().negate(), lightIntensity: 3, lightFar: 80000, lightMargin: 8000, shadowBias: -0.0003,
+    lightDirection: U.uSunDir.value.clone().negate(), lightIntensity: SUN, lightFar: 80000, lightMargin: 8000, shadowBias: -0.0003,
   });
-  for (const l of csm.lights) { l.color.set(0xfff2e2); l.shadow.normalBias = 1.5; }
+  for (const l of csm.lights) { l.color.set(0xfff6ea); l.shadow.normalBias = 1.5; }
   const shadowed = [...lit, carMaterial, effects.marksMaterial];
   for (const m of shadowed) {
     const own = m.onBeforeCompile;
     csm.setupMaterial(m); // replaces onBeforeCompile: chain ours after it
     const hook = m.onBeforeCompile;
-    m.onBeforeCompile = (s, r) => { hook(s, r); if (lit.has(m)) own(s, r); };
-    m.customProgramCacheKey = () => (lit.has(m) ? 'detail' : 'plain') + '+csm';
+    m.onBeforeCompile = (s, r) => { hook(s, r); own(s, r); };
+    m.customProgramCacheKey = () => (m.userData.shaderKey ?? 'plain') + '+csm';
   }
+
+  const fill = new THREE.DirectionalLight(0xcfe0ff, FILL);
+  fill.position.set(-0.55, 0.4, -0.75);
+  fill.visible = false;
+  scene.add(fill);
 
   let on = false;
   return {
+    parts: { post, csm, renderer }, // for measurements (tools/browse.mjs)
     get enabled() { return on; },
     set enabled(v) {
       on = v;
@@ -234,24 +221,30 @@ void main() {
         m.needsUpdate = true;
       }
       for (const l of csm.lights) l.visible = on;
+      fill.visible = on;
       sun.visible = !on;
       csm.updateFrustums();
-      hemi.intensity = on ? 0.6 : classic.hemi;
-      hemi.color.set(on ? 0xf2f2f0 : classic.hemiColor);
-      sun.intensity = on ? 3 : classic.sun;
-      sun.color.set(on ? 0xfff2e2 : classic.sunColor);
-      Object.assign(carMaterial, on ? { envMap: env, clearcoat: 0.7, clearcoatRoughness: 0.1, roughness: 0.6 } : { envMap: null, clearcoat: 0, roughness: 0.9 });
+      hemi.intensity = on ? HEMI : classic.hemi;
+      hemi.color.set(on ? 0xeaf0ff : classic.hemiColor);
+      hemi.groundColor.set(on ? 0x9aa08c : classic.hemiGround);
+      sun.intensity = on ? SUN : classic.sun;
+      sun.color.set(on ? 0xfff6ea : classic.sunColor);
+      // Paint: a clear coat over the palette colour; the sky only shows in it at glancing angles,
+      // so that dark panels (windows, grilles) stay dark.
+      Object.assign(carMaterial, on ? { envMap: env, envMapIntensity: 0.15, clearcoat: 0.45, clearcoatRoughness: 0.15, roughness: 0.5 }
+        : { envMap: null, clearcoat: 0, roughness: 0.9 });
     },
     // Per rendered frame: dt in seconds (0 when paused), cars [{ cs, obj }], state.game_frame.
     update(dt, cars, frame) { effects.update(dt, cars, frame); },
     setScenery(i) { scenery = i; showScenery(); },
-    resize(w, h) { composer.setPixelRatio(renderer.getPixelRatio()); composer.setSize(w, h); csm.updateFrustums(); },
+    resize(w, h) { post.setSize(w, h); csm.updateFrustums(); },
+    cameraChanged() { csm.updateFrustums(); }, // after a change of the camera's projection
     render() {
       U.uTime.value = performance.now() / 1000;
       sky.position.copy(camera.position);
       camera.updateMatrixWorld();
       csm.update();
-      composer.render();
+      post.render(skyScene, scene, camera);
     },
   };
 }

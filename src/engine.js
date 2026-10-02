@@ -2,10 +2,12 @@
 // memory; JS ports can replace them one by one (hook) and can call not-yet-ported originals
 // (callOrig). With all ports enabled the interpreter only serves tests and ?original.
 import { CPU, callFar } from './x86.js';
-import PROCS from './procs.js';
+import PROCS_BB from './procs.js';
+import PROCS_MS from './procs-ms.js';
 import { M, DSEG, ww } from './mem.js';
+import { MS } from './version.js';
 
-export { PROCS };
+export const PROCS = MS ? PROCS_MS : PROCS_BB;
 export const cpu = new CPU(M);
 const SEGS = Object.entries(PROCS).filter(([k]) => /^seg\d+$/.test(k)).map(([, v]) => v).sort((a, b) => a - b);
 

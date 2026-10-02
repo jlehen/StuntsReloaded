@@ -1,6 +1,7 @@
 // Differential tests: src/gamestate.js vs the original, from realistic race states, plus lockstep
 // integration runs (replay seeking with restore_gamestate, live recording with replay_unk2).
 import { M, A, G, U, DS, rw, rsw, ww } from '../src/mem.js';
+import { MS } from '../src/version.js';
 import { GAMESTATE, CARSTATE } from '../src/structs.js';
 import { loadResfile } from '../src/files.js';
 import { enable, disable } from '../src/calls.js';
@@ -20,11 +21,11 @@ let ok = true;
 
 // --- Realistic states: snapshots along several scenarios (every 60 frames, and while debris flies).
 const snaps = [];
-for (const name of ['default-replay', 'random-opp5', 'random-opp1', 'random-manual', 'random-10fps']) {
+for (const name of ['default-replay', 'random-opp5', 'random-opp1', 'random-manual', 'random-10fps'].filter(n => SCENARIOS.some(s => s.name === n))) {
   const sc = SCENARIOS.find(s => s.name === name);
   bootWorld();
   const rec = sc.setup();
-  setupRace(sc.fps ?? (gameconfig.game_framespersec || 20));
+  setupRace(sc.fps);
   snaps.push(M.slice());
   const frames = Math.min(sc.frames ?? rec, name === 'random-10fps' ? 800 : 1300);
   for (let f = 0; f < frames; f++) {
@@ -71,7 +72,7 @@ ok &= fuzz('init_carstate_from_simd', 1000, () => {
 ok &= fuzz('init_game_state', 300, () => {
   load();
   if (rnd(0, 2) === 0) { G.track_angle = rnd(0, 3) * 0x100; G.hillFlag = rnd(0, 1); }
-  if (rnd(0, 3) === 0) G.framespersec = pick([10, 20]);
+  if (!MS && rnd(0, 3) === 0) G.framespersec = pick([10, 20]);
   if (rnd(0, 3) === 0) gameconfig.game_playertransmission = rnd(0, 1);
   const arg = pick([0xffff, 0, 0xfffe, 0xfffd]);
   return [arg, () => g.init_game_state(arg), () => o('init_game_state', arg), 0];
@@ -82,7 +83,7 @@ ok &= fuzz('restore_gamestate', 600, () => {
   load();
   const f = rw(S + O.game_frame);
   if (rnd(0, 3) === 0) G.elapsed_time1 = rnd(0, 1) * rnd(1, 600);
-  const t = pick([0, rnd(0, f), rnd(0, f + 1300), f, rnd(0, 20) * U.word_45A00, rnd(0, 0x3000)]);
+  const t = pick([0, rnd(0, f), rnd(0, f + 1300), f, rnd(0, 20) * (MS ? 600 : U.word_45A00), rnd(0, 0x3000)]);
   return [`${t} from ${f}`, () => g.restore_gamestate(t), () => o('restore_gamestate', t), 0];
 });
 
@@ -101,7 +102,7 @@ ok &= fuzz('update_gamestate', 800, i => {
     G.byte_449DA = rnd(0, 1) * rnd(0, 1); G.game_replay_mode = pick([0, 0, 2]);
     M[PL + C.car_crashBmpFlag] = rnd(0, 2); ww(PL + C.car_speed2, rnd(0, 1) * rnd(0, 3000));
   } else if (mode === 3) {
-    ww(S + O.game_frame, rnd(0, 18) * U.word_45A00);
+    ww(S + O.game_frame, rnd(0, 18) * (MS ? 600 : U.word_45A00));
   }
   return [`mode ${mode}`, () => viaHook('update_gamestate'), () => o('update_gamestate'), 0];
 });
@@ -124,7 +125,7 @@ ok &= fuzz('sub_19BA0', 800, () => {
   load();
   if (rnd(0, 1)) o('state_op_unk', rnd(0, 3), rnd(0, 0x3ff), rnd(0, 1) * rnd(0, 2000));
   for (let k = rnd(0, 40); k > 0 && M[S + O.field_42A]; k--) o('sub_19BA0');
-  if (rnd(0, 3) === 0) G.framespersec = pick([10, 20]);
+  if (!MS && rnd(0, 3) === 0) G.framespersec = pick([10, 20]);
   return ['', () => g.sub_19BA0(), () => o('sub_19BA0'), 0];
 });
 ok &= fuzz('state_op_unk', 1000, () => {
@@ -145,7 +146,7 @@ ok &= fuzz('replay_unk2', 2000, i => {
   if (rnd(0, 2) === 0) G.byte_449DA = 1;
   if (rnd(0, 2) === 0) M[S + O.game_3F6autoLoadEvalFlag] = 1;
   G.passed_security = rnd(0, 1); G.byte_4393C = rnd(0, 3) === 0 ? 1 : 0;
-  if (rnd(0, 3) === 0) G.framespersec = pick([10, 20]);
+  if (!MS && rnd(0, 3) === 0) G.framespersec = pick([10, 20]);
   const e2 = pick([rnd(0, 0x2ee0), 0x2ee0, 0x2ee0, 0x2edf, U.elapsed_time2]);
   G.elapsed_time2 = e2;
   G.elapsed_time1 = pick([0, 0, rnd(0, 20000), 30000 - e2 - rnd(0, 1)]);

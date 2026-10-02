@@ -3,6 +3,7 @@
 // through their hook (same entry sp and registers as the original), and the stack below
 // is compared too: callers read some of that residue uninitialized (see car.js).
 import { M, A, G, DS, ww, wb, rb, rw } from '../src/mem.js';
+import { MS } from '../src/version.js';
 import { CARSTATE, SIMD, state } from '../src/structs.js';
 import { PORTS } from '../src/car.js';
 import { enable, disable } from '../src/calls.js';
@@ -33,7 +34,7 @@ SCENARIOS.push(...CAR_SCENARIOS);
 
 // Realistic snapshots: a few scenarios run with the original code.
 const snaps = [];
-for (const name of ['random-opp3', 'random-manual', 'random-10fps', 'random-opp6']) {
+for (const name of ['random-opp3', 'random-manual', 'random-10fps', 'random-opp6'].filter(n => SCENARIOS.some(s => s.name === n))) {
   const sc = SCENARIOS.find(s => s.name === name);
   bootWorld();
   sc.setup();
@@ -65,7 +66,8 @@ function fuzz(name, n, gen) {
     let js, orig;
     let r = compare(() => { try { return viaHook(name, args); } finally { js = M.slice(...STACK); } },
       () => { const v = o(name, ...args); orig = M.slice(...STACK); return v; }, mask);
-    if (!r) for (let a = 0; a < js.length; a += 2) if (js[a] !== orig[a] || js[a + 1] !== orig[a + 1]) {
+    // (Not on the Mindscape build, whose ports do not reproduce the stack: see stack.js.)
+    if (!r && !MS) for (let a = 0; a < js.length; a += 2) if (js[a] !== orig[a] || js[a + 1] !== orig[a + 1]) {
       r = `stack ss:${(STACK[0] - DS + a).toString(16)} = ${js[a] | js[a + 1] << 8} vs ${orig[a] | orig[a + 1] << 8}`;
       break;
     }
@@ -87,7 +89,7 @@ ok &= fuzz('update_car_speed', N, () => {
   restore();
   const mp = rnd(0, 1), [c, simd] = cars[mp];
   const cs = new CARSTATE(c);
-  G.framespersec = pick([20, 20, 10]);
+  if (!MS) G.framespersec = pick([20, 20, 10]);
   if (rnd(0, 1)) f8(c, 'car_transmission', rnd(0, 1));
   if (rnd(0, 2) === 0) {
     f8(c, 'car_changing_gear', rnd(0, 1));
@@ -114,7 +116,7 @@ ok &= fuzz('update_car_speed', N, () => {
 
 ok &= fuzz('upd_statef20_from_steer_input', N, () => {
   restore();
-  G.framespersec = pick([20, 20, 10]);
+  if (!MS) G.framespersec = pick([20, 20, 10]);
   if (rnd(0, 1)) state.playerstate.car_steeringAngle = rnd(0, 5) ? rnd(-0x110, 0x110) : w16();
   if (rnd(0, 1)) state.playerstate.car_speed2 = rnd(0, 3) ? rnd(0, 0xf000) : rnd(0, 3) ? 0 : w16();
   const input = rnd(0, 5) ? rnd(0, 3) : rnd(0, 0xff);
@@ -180,7 +182,7 @@ ok &= fuzz('update_crash_state', N, () => {
   restore();
   const mp = rnd(0, 1), c = cars[mp][0];
   f8(c, 'car_crashBmpFlag', rnd(0, 3) ? 0 : rnd(1, 3));
-  G.framespersec = pick([20, 10]);
+  if (!MS) G.framespersec = pick([20, 10]);
   if (rnd(0, 2) === 0) state.game_3F6autoLoadEvalFlag = rnd(0, 3);
   if (rnd(0, 2) === 0) wb(A.byte_43966, rnd(0, 255));
   if (rnd(0, 1)) G.elapsed_time1 = w16();

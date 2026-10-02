@@ -4,7 +4,7 @@ import { describeTweaks } from './tweaks.js';
 
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
-const SCREENS = ['main', 'cars', 'opps', 'tracks', 'results'];
+const SCREENS = ['main', 'cars', 'opps', 'tracks', 'saves', 'results'];
 
 export function show(screen) {
   for (const s of SCREENS) $(s).hidden = s !== screen;
@@ -51,6 +51,44 @@ export function initUI(app) {
     if (f) app.startReplay(new Uint8Array(await f.arrayBuffer()));
     e.target.value = '';
   };
+  // Kept replays, and playstunts' backup file.
+  const renderSaves = () => {
+    const names = app.replayNames();
+    $('saves-list').replaceChildren(...(names.length ? names.map(n => el('div', { className: 'row' },
+      el('button', { textContent: n + '.RPL', onclick: () => app.playReplay(n) }),
+      el('button', { textContent: 'Delete', onclick: () => { app.deleteReplay(n); renderSaves(); } })))
+      : [el('p', { className: 'summary', textContent: 'No replay kept yet: "Save replay" after a race keeps it here too.' })]));
+  };
+  $('m-saves').onclick = () => { show('saves'); $('saves-msg').textContent = ''; renderSaves(); };
+  $('saves-export').onclick = () => { $('saves-msg').textContent = `Exported ${app.exportBackup()} files.`; };
+  $('saves-import').onchange = async e => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const n = app.importBackup(await f.text());
+      $('saves-msg').textContent = `Imported ${n.tracks} tracks, ${n.replays} replays and ${n.scores} best times.`;
+    } catch (err) { $('saves-msg').textContent = `Not imported: ${err.message}.`; }
+    renderSaves();
+  };
+  // The build being played, and the player's own copies of the game (start.js).
+  const build = $('m-build');
+  build.replaceChildren(...app.builds.available.map(v => new Option(app.builds.names[v], v)));
+  build.value = app.builds.current;
+  build.onchange = () => app.builds.choose(build.value);
+  $('m-build-note').textContent = app.builds.note;
+  $('m-files').onchange = async e => {
+    const added = await app.builds.addFiles(e.target.files);
+    e.target.value = '';
+    if (added) app.builds.choose(added); // reloads with that copy
+    else $('m-build-note').textContent = 'No game found in those files (GAME.EXE, or MCGA.HDR, MCGA.COD, MCGA.DIF and EGA.CMN).';
+  };
+  addEventListener('dragover', e => e.preventDefault());
+  addEventListener('drop', async e => {
+    e.preventDefault();
+    const msg = await app.dropFiles([...e.dataTransfer.files]).catch(err => `Not loaded: ${err.message}.`);
+    if (msg) { $('m-build-note').textContent = msg; updateSummary(); }
+  });
   for (const b of document.querySelectorAll('[data-back]')) b.onclick = () => { app.showroom(false); show('main'); updateSummary(); };
 
   function updateSummary() {
@@ -136,8 +174,13 @@ export function showResults(app, r) {
     const lines = [1, 2, 3, 4].flatMap(n => ['a', 'b', 'c', 'd'].map(v => text(`OPP${r.opponent.id}.PRE`, `e${won ? 'v' : 'd'}${n}${v}`)[0]).filter(Boolean));
     face.append(el('p', { textContent: `“${lines[Math.floor(Math.random() * lines.length)] ?? ''}”` }));
   }
-  $('res-hi').replaceChildren(...r.highscores.map((h, i) => el('tr', { className: h.current ? 'on' : '' },
-    el('td', { textContent: i + 1 }), el('td', { textContent: h.time }), el('td', { textContent: h.car }), el('td', { textContent: h.date }))));
+  // As the original's table: name, car, opponent (in parentheses if it won), time.
+  const hiRows = () => $('res-hi').replaceChildren(...r.highscores.map((h, i) => el('tr', { className: h.current ? 'on' : '' },
+    el('td', { textContent: i + 1 }), el('td', { textContent: h.time }), el('td', { textContent: (h.current ? $('res-name').value : h.name) || '—' }),
+    el('td', { textContent: h.car }), el('td', { textContent: h.opponent ? (h.lost ? `(${h.opponent})` : h.opponent) : '' }), el('td', { textContent: h.date }))));
+  $('res-name').value = app.settings.name;
+  $('res-name').oninput = () => { r.rename?.($('res-name').value.slice(0, 16)); hiRows(); };
+  hiRows();
   $('res-hi-note').textContent = r.tweaks && `With ${r.tweaks}.`;
   $('res-hi-wrap').hidden = !r.highscores.length;
   $('res-replay').onclick = () => app.viewReplay();

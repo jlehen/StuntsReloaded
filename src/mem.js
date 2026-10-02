@@ -1,8 +1,14 @@
 // Emulated real-mode memory shared by the whole port. GAME.EXE's image is loaded at
 // linear 0x10000 (segment 0x1000, as in IDA and the test oracle), so its data segment
 // (DGROUP) sits at linear 0x3B770 and every original global lives at its original address.
+// The Mindscape build (version.js) is loaded a little higher, so that its shorter code leaves
+// DGROUP at the same place; its globals have their own offsets (dseg-labels-ms.js).
 // Ported code reads/writes memory with C-like type semantics: stores wrap to the type width.
-import LABELS from './dseg-labels.js';
+import LABELS_BB from './dseg-labels.js';
+import LABELS_MS from './dseg-labels-ms.js';
+import { MS } from './version.js';
+
+const LABELS = MS ? LABELS_MS : LABELS_BB;
 
 export const M = new Uint8Array(0x110000);
 const V = new DataView(M.buffer);
@@ -26,6 +32,11 @@ export const s16 = v => (v << 16) >> 16;
 export const u16 = v => v & 0xffff;
 export const s32 = v => v | 0;
 export const u32 = v => v >>> 0;
+// Signed 16-bit v / 2^n rounding toward zero, as the Mindscape build computes it (cwd; xor ax,dx;
+// sub ax,dx; sar ax,n; xor ax,dx; sub ax,dx) where the Broderbund build has a plain sar.
+export const sdiv2 = (v, n) => { v = s16(v); const d = v >> 15; return s16(((s16((v ^ d) - d) >> n) ^ d) - d); };
+// Its signed 16-bit v / 2 (cwd; sub ax,dx; sar ax,1): also toward zero, but -32768 gives -16384.
+export const shalf = v => s16(s16(v) - (s16(v) >> 15)) >> 1;
 // C truncating division / remainder (and 16-bit int versions).
 export const div = (a, b) => Math.trunc(a / b);
 export const idiv16 = (a, b) => s16(Math.trunc(s16(a) / s16(b)));
@@ -37,8 +48,12 @@ export const farptr = a => ((rw(a + 2) << 4) + rw(a)) & 0xfffff; // deref a far 
 export const farptrAt = (a, delta) => ((rw(a + 2) << 4) + ((rw(a) + delta) & 0xffff)) & 0xfffff;
 export const setFarptr = (a, lin) => { ww(a, lin & 15); ww(a + 2, lin >> 4); };
 
-// Label addresses: A.name -> linear address of the global.
+// Label addresses: A.name -> linear address of the global. A global the loaded build lacks
+// throws when used, so a port cannot silently touch address NaN.
 export const A = Object.fromEntries(Object.entries(LABELS).map(([k, [o]]) => [k, DS + o]));
+for (const k of Object.keys(LABELS_BB)) {
+  if (!(k in LABELS)) Object.defineProperty(A, k, { get() { throw new Error(`global ${k} does not exist in this build`); } });
+}
 // G.name: scalar global access with the declared width (db/dw/dd), signed.
 // U.name: same, unsigned. Arrays: use A.name with rb/rw/... helpers.
 export const G = {}, U = {};
@@ -132,17 +147,18 @@ export function farAlloc(bytes) {
 export const heapReset = (to = HEAP_START) => { heap = to; };
 export const heapMark = () => heap;
 
-// Load the MZ image (with relocations) at segment 0x1000: initializes DGROUP exactly
+// Load the MZ image (with relocations) at segment LOAD_SEG: initializes DGROUP exactly
 // as the original's data segment. BSS beyond the image is zeroed.
-export function loadExe(exe) {
+export const LOAD_SEG = MS ? 0x10dd : 0x1000;
+export function loadExe(exe, seg = LOAD_SEG) {
   const w = o => exe[o] | (exe[o + 1] << 8);
   const hdr = w(8) * 16, nrel = w(6), relo = w(0x18);
   let size = w(4) * 512 - hdr; if (w(2)) size -= 512 - w(2);
   M.fill(0);
-  M.set(exe.subarray(hdr, hdr + size), 0x10000);
+  M.set(exe.subarray(hdr, hdr + size), seg * 16);
   for (let i = 0; i < nrel; i++) {
-    const a = (0x1000 + w(relo + i * 4 + 2)) * 16 + w(relo + i * 4);
-    ww(a, (rw(a) + 0x1000) & 0xffff);
+    const a = (seg + w(relo + i * 4 + 2)) * 16 + w(relo + i * 4);
+    ww(a, (rw(a) + seg) & 0xffff);
   }
   heapReset();
   sp = STACK_TOP;

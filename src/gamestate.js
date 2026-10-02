@@ -13,8 +13,9 @@
 //   field_42A: any piece alive. field_3FA[48]: per-object "already knocked" flags.
 // - field_3F4: snapshot-valid flag (meaningful in the cvx copies), kevinseed: RNG state saved
 //   with each snapshot.
-import { M, A, G, U, DS, rw, rsw, rd, rsd, ww, wd, s8, s16, u16, farptr, farptrAt, frame, alloca } from './mem.js';
-import { GAMESTATE, CARSTATE, SIMD, gameconfig } from './structs.js';
+import { M, A, G, U, DS, rw, rsw, rd, rsd, ww, wd, s8, s16, u16, sdiv2, farptr, farptrAt, frame, alloca } from './mem.js';
+import { GAMESTATE, CARSTATE, SIMD, gameconfig, fps } from './structs.js';
+import { MS } from './version.js';
 import { idiv, sin_fast, cos_fast, polarAngle, polarRadius2D, multiply_and_scale as mas, mat_rot_zxy, mat_mul_vector } from './math.js';
 import { call, provide, defineSigs } from './calls.js';
 import { cpu } from './engine.js';
@@ -26,7 +27,9 @@ defineSigs({
 
 const S = A.state, O = GAMESTATE.offsets, C = CARSTATE.offsets;
 const PLAYER = S + O.playerstate, OPPONENT = S + O.opponentstate;
-const SNAP = GAMESTATE.size; // 0x460
+const SNAP = GAMESTATE.size; // 0x460 (Mindscape: 0x430)
+// Frames between replay snapshots (30 s).
+const snapFrames = MS ? () => 600 : () => U.word_45A00;
 // Element i of the cvx snapshot array (huge-pointer math: 32-bit add, 20-bit wrap).
 // ponytail: copies use linear addresses; cvxptr is paragraph-aligned so the offset never wraps.
 const cvx = i => (farptr(A.cvxptr) + Math.imul(s16(i), SNAP)) & 0xfffff;
@@ -67,6 +70,7 @@ export function init_carstate_from_simd(p, simd, transm, x, y, z, angle) {
   for (let i = 0; i < 4; i++) {
     M[p + C.car_surfaceWhl + i] = 1;
     for (const f of ['car_rc1', 'car_rc2', 'car_rc3', 'car_rc4', 'car_rc5']) ww(p + C[f] + i * 2, 0);
+    if (MS) continue; // leaves the wheel positions of the previous race
     for (const f of ['car_whlWorldCrds1', 'car_whlWorldCrds2']) { const v = p + C[f] + i * 6; ww(v, wx); ww(v + 2, wy); ww(v + 4, wz); }
   }
   for (const f of ['car_engineLimiterTimer', 'car_slidingFlag', 'field_C8', 'car_crashBmpFlag', 'car_changing_gear', 'car_fpsmul2']) M[p + C[f]] = 0;
@@ -81,14 +85,17 @@ export function init_game_state(arg) {
     G.elapsed_time1 = 0;
     for (let i = 0; i < 20; i++) M[cvx(i) + O.field_3F4] = 0;
   }
-  G.steerWhlRespTable_ptr = (G.framespersec === 10 ? A.steerWhlRespTable_10fps : A.steerWhlRespTable_20fps) - DS;
-  G.word_45A00 = 30 * G.framespersec;
-  G.word_4499C = idiv(100, G.framespersec);
-  if (arg === 0xfffd) return;
+  if (!MS) {
+    G.steerWhlRespTable_ptr = (G.framespersec === 10 ? A.steerWhlRespTable_10fps : A.steerWhlRespTable_20fps) - DS;
+    G.word_45A00 = 30 * G.framespersec;
+    G.word_4499C = idiv(100, G.framespersec);
+    if (arg === 0xfffd) return;
+  }
   call.init_unknown();
   M[S + O.field_3F4] = 1; ww(S + O.game_frames_per_sec, 1);
   M[S + O.game_inputmode] = 0; M[S + O.game_3F6autoLoadEvalFlag] = 0;
-  ww(S + O.game_frame_in_sec, 0); ww(S + O.field_2F4, 0);
+  ww(S + O.game_frame_in_sec, 0);
+  if (!MS) ww(S + O.field_2F4, 0);
   M[S + O.field_3F7] = 0; M[S + O.field_3F7 + 1] = 0;
   M.fill(0, S + O.field_3FA, S + O.field_3FA + 48);
   M.fill(0, S + O.field_38E, S + O.field_38E + 48);
@@ -135,7 +142,8 @@ export function setup_aero_trackdata(carres, isOpp) {
   M.copyWithin(simd, src, src + SIMD.size);
   wd(simd + SIMD.offsets.aerorestable, rd(table));
   const aero = rsw(simd + SIMD.offsets.aero_resistance);
-  for (let i = 0; i < 64; i++) ww(farptrAt(table, i * 2), Math.imul(Math.imul(aero, i), i) >> 9);
+  // Broderbund shifts; Mindscape divides (__aFldiv), which rounds toward zero.
+  for (let i = 0; i < 64; i++) { const d = Math.imul(Math.imul(aero, i), i); ww(farptrAt(table, i * 2), MS ? Math.trunc(d / 512) : d >> 9); }
   call.copy_string(dst, farRet(call.locate_shape_alt(carres, nameRes)));
 }
 
@@ -145,11 +153,11 @@ export function setup_aero_trackdata(carres, isOpp) {
 export function restore_gamestate(target) {
   target = u16(target);
   if (target === 0 && U.elapsed_time1 === 0) call.init_game_state(0);
-  let si = s16(idiv(s16(target), G.word_45A00));
+  let si = s16(idiv(s16(target), snapFrames()));
   if (si === 20) si--;
   if (target >= rw(S + O.game_frame)) {
     for (; ; si--) {
-      if (u16(Math.imul(U.word_45A00, si)) <= rw(S + O.game_frame)) return;
+      if (u16(Math.imul(snapFrames(), si)) <= rw(S + O.game_frame)) return;
       if (M[cvx(si) + O.field_3F4]) break;
     }
   }
@@ -172,10 +180,11 @@ function updateGamestate() {
   const f = rw(S + O.game_frame);
   const input = M[farptrAt(A.td16_rpl_buffer, f)];
   if (input) M[S + O.game_inputmode] = 1;
-  if (U.word_45A00 === 0) throw new Error('divide by zero'); // div word_45A00
-  if (f % U.word_45A00 === 0) {
+  const snap = snapFrames();
+  if (snap === 0) throw new Error('divide by zero'); // div word_45A00
+  if (f % snap === 0) {
     call.get_kevinrandom_seed(S + O.kevinseed);
-    const d = cvx(Math.floor(f / U.word_45A00));
+    const d = cvx(Math.floor(f / snap));
     M.copyWithin(d, S, S + SNAP);
   }
   ww(S + O.game_frame, f + 1);
@@ -234,11 +243,11 @@ export function sub_2298C() {
     let dist = polarRadius2D(s16(cx - rsw(cam)), s16(cz - rsw(cam + 4)));
     // Horizontal: stay within 450 of the car, moving at most 120 (20 fps) / 240 per frame.
     if (dist > 0x1c2) {
-      dist = Math.min(s16(dist - 0x1c2), G.framespersec === 20 ? 0x78 : 0xf0);
+      dist = Math.min(s16(dist - 0x1c2), fps() === 20 ? 0x78 : 0xf0);
       ww(cam, rsw(cam) + mas(dist, sin_fast(ang)));
       ww(cam + 4, rsw(cam + 4) + mas(dist, cos_fast(ang)));
     }
-    const div = (G.framespersec >> 1) & 0xffff;
+    const div = (fps() >> 1) & 0xffff;
     if (div === 0) throw new Error('divide by zero');
     if (rw(S + O.game_frame) % div) continue;
     let best = 10000;
@@ -267,7 +276,7 @@ export function sub_19BA0() {
       L(O.game_longs1, rsw(out));
       L(O.game_longs3, rsw(out + 4));
       const vy = w(O.field_3BE, i);
-      for (let k = G.framespersec === 10 ? 2 : 1; k > 0; k--) { ww(vy, rsw(vy) - 0x13); L(O.game_longs2, rsw(vy)); }
+      for (let k = fps() === 10 ? 2 : 1; k > 0; k--) { ww(vy, rsw(vy) - 0x13); L(O.game_longs2, rsw(vy)); }
     });
     // Alive while above the player's height (even for opponent debris).
     if ((rsd(S + O.game_longs2 + i * 4) + rsd(PLAYER + C.car_posWorld1 + 4) | 0) >= 0) {
@@ -297,9 +306,10 @@ export function state_op_unk(type, angle, speed) {
     ww(w(O.field_2FE, i), (call.get_kevinrandom() & 0xffff) << 2);
     ww(w(O.field_32E, i), (call.get_kevinrandom() & 0xffff) << 2);
     ww(w(O.field_35E, i), (Math.trunc(spread * k / free) + base) & 0x3ff);
-    const di = s16((s16((call.get_kevinrandom() & 0xffff) * 6) >> 2) + speed + 0x180);
+    const r = call.get_kevinrandom() & 0xffff;
+    const di = s16((MS ? sdiv2((r * 0x18) << 6, 8) : s16(r * 6) >> 2) + speed + 0x180);
     ww(w(O.field_38E, i), di);
-    ww(w(O.field_3BE, i), s16(vmul * di) >> 2);
+    ww(w(O.field_3BE, i), MS ? sdiv2(vmul * di, 2) : s16(vmul * di) >> 2);
     if (++k === free) break;
   }
 }
@@ -329,12 +339,12 @@ export function replay_unk2(arg, input = 0) {
       return;
     }
     if (!U.byte_449DA && !M[S + O.game_3F6autoLoadEvalFlag] && U.game_replay_mode !== 1) {
-      if (!U.passed_security && !U.byte_4393C && u16(G.framespersec * 4) < rw(S + O.game_frame)) call.update_crash_state(1, 0);
+      if (!U.passed_security && !U.byte_4393C && u16(fps() * 4) < rw(S + O.game_frame)) call.update_crash_state(1, 0);
       si = input;
     }
   }
   // Time limit: 1500 s.
-  if (u16(1500 * G.framespersec) <= u16(U.elapsed_time2 + U.elapsed_time1)) {
+  if (u16(1500 * fps()) <= u16(U.elapsed_time2 + U.elapsed_time1)) {
     call.update_crash_state(4, 0);
     G.byte_449DA = 1;
     return;
@@ -343,7 +353,7 @@ export function replay_unk2(arg, input = 0) {
     // Buffer full (12000 frames): the first time, ask (byte_46467); then slide the window by
     // 30 s: drop the oldest snapshot and 30*fps input bytes, elapsed_time1 counts dropped frames.
     if (U.elapsed_time1 === 0 && M[A.word_45D3E] === 0) { M[A.word_45D3E] = 1; G.byte_46467 = 1; return; }
-    const step = s16(30 * G.framespersec);
+    const step = s16(30 * fps());
     for (let i = 0; i < idiv(0x2ee0, step) - 1; i++) { // 39 at 10 fps: overruns the 20-entry cvx, as the original
       const src = cvx(i + 1);
       ww(src + O.game_frame, rw(src + O.game_frame) - step);

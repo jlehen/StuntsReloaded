@@ -21,6 +21,7 @@ import {
   mat_mul_vector, mat_mul_vector2, mat_invert, mat_rot_y, mat_rot_zxy,
 } from './math.js';
 import { call, provide } from './calls.js';
+import { MS } from './version.js';
 
 const GRASS = 4, WATER = 5;
 const tbl = (label, i) => rsw(label + 2 * i); // entry of a word table in DGROUP
@@ -431,8 +432,8 @@ function elementSurface(pos, nextPos, tileElem) {
         else if (nvx < -0x61) G.wallindex = 0x90;
       }
       break;
-    case 0x23: { // cork left/right: a tube twisting along z
-      if (absX >= 0x96 || h >= 0x109) break;
+    case 0x23: { // cork left/right: a tube twisting along z (narrower in the Mindscape build)
+      if (absX >= (MS ? 0x82 : 0x96) || h >= 0x109) break;
       pave();
       const sector = tubeSector(vx, absX, h);
       if (sector !== 0 && tbl(A.corkLR_negZBound, sector) < vz && tbl(A.corkLR_posZBound, sector) > vz) G.planindex = sector + 0x39;

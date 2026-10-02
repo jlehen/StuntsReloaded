@@ -14,6 +14,8 @@
   #hud { position: fixed; inset: auto 0 16px 0; display: flex; justify-content: center; gap: 28px; flex-wrap: wrap;
     text-shadow: 0 1px 3px var(--shadow); font: 600 20px/1.2 ui-monospace, monospace; pointer-events: none; }
   #hud .pen { color: var(--bad); }
+  #fps { position: fixed; top: 12px; right: 12px; padding: 4px 10px; border-radius: 8px; background: var(--panel);
+    font: 600 13px/1.4 ui-monospace, monospace; font-variant-numeric: tabular-nums; pointer-events: none; }
   .panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(560px, calc(100% - 32px));
     max-height: calc(100% - 32px); overflow: auto; background: var(--panel); border-radius: 14px; padding: 24px;
     box-sizing: border-box; backdrop-filter: blur(8px); box-shadow: 0 10px 40px rgba(0,0,0,.4); }
@@ -60,8 +62,16 @@
   #rb-seek { width: min(360px, 40vw); accent-color: var(--accent); }
   #m-fragility { flex: 1; min-width: 0; accent-color: var(--accent); }
   #m-fragility-val { min-width: 9.5em; text-align: right; font-variant-numeric: tabular-nums; }
+  #m-build { flex: 1; min-width: 0; }
+  #m-build-note { margin: 6px 0 0; }
+  #m-build-note:empty { display: none; }
   #res-hi-note { margin: -10px 0 8px; }
   #res-hi-note:empty { display: none; }
+  #res-name { flex: 1; min-width: 0; font: inherit; background: var(--btn); color: var(--fg); border: 0; border-radius: 6px; padding: 6px 8px; }
+  #saves-list { display: grid; gap: 6px; margin-bottom: 8px; }
+  #saves-list .row { margin: 0; }
+  #saves-list .row > button:first-child { flex: 1; text-align: left; }
+  #saves-msg:empty { display: none; }
   #ed-side { position: fixed; left: 0; top: 0; bottom: 0; width: 300px; background: var(--panel); display: flex; flex-direction: column;
     padding: 12px; box-sizing: border-box; gap: 8px; }
   #ed-bar, #ed-bar2, #ed-bar3 { display: flex; gap: 6px; }
@@ -84,12 +94,14 @@
 <canvas id="dash"></canvas>
 <div id="status">Loading…</div>
 <div id="hud" hidden></div>
+<div id="fps" hidden></div>
 
 <div id="files" class="panel" hidden>
   <h2>Stunts Reloaded needs the original game</h2>
-  <p>This remake runs on the data files of <em>Stunts 1.1</em> (1990). Select your Stunts folder (or drop its files here).
-    They stay in your browser.</p>
-  <label class="filebtn">Choose the Stunts folder<input type="file" id="files-pick" webkitdirectory multiple></label>
+  <p>This remake runs on the data files of <em>4D Sports Driving 1.1</em> or <em>Stunts 1.1</em> (1990). Select your game folder
+    or its .zip (or drop the files here). They stay in your browser.</p>
+  <div class="row"><label class="filebtn">Choose the game folder<input type="file" id="files-pick" webkitdirectory multiple></label>
+    <label class="filebtn">Choose a .zip<input type="file" id="files-zip" accept=".zip"></label></div>
   <p id="files-msg" class="summary"></p>
 </div>
 
@@ -101,13 +113,19 @@
     <button id="m-opp">Opponent</button>
     <button id="m-track">Track</button>
     <label class="filebtn">Load replay<input type="file" id="m-replay" accept=".rpl,.RPL"></label>
+    <button id="m-saves">Replays &amp; backup</button>
   </div>
   <div class="row"><label><input type="checkbox" id="m-enhanced"> Enhanced graphics</label>
     <label title="Quick, precise steering that stops at what the tyres can hold. On a gamepad, the stick steers in proportion.">
       <input type="checkbox" id="m-assist"> Steering assist</label></div>
   <div class="row"><label for="m-fragility" title="How hard a hit the car takes before it is wrecked">Car fragility</label>
     <input type="range" id="m-fragility" min="0" max="100" step="5"><output id="m-fragility-val" for="m-fragility"></output></div>
-  <div class="keys">Arrows: drive · A / Z: shift up / down (manual) · C: camera · R: restart · M: sound · Esc: menu</div>
+  <div class="row"><label for="m-build" title="The two releases of the game drive slightly differently, so each has its own replays and best times">Game</label>
+    <select id="m-build"></select>
+    <label class="filebtn" title="Add a copy of the game: its folder's files, or its .zip">Add files<input type="file" id="m-files" multiple></label></div>
+  <div class="summary" id="m-build-note"></div>
+  <div class="keys">Arrows: drive · A / Z or Space / Enter: shift up / down (manual) · C or F1–F3: camera · T: watch the opponent ·
+    D: dashboard · V: chase distance · F: frame rate · R: restart · M: sound · Esc: menu</div>
 </div>
 
 <div id="cars" class="panel" hidden>
@@ -136,10 +154,24 @@
   <button class="back" data-back>Done</button>
 </div>
 
+<div id="saves" class="panel" hidden>
+  <h2>Replays &amp; backup</h2>
+  <div id="saves-list"></div>
+  <p class="summary">A backup holds your tracks, replays and best times in playstunts' format: import one made there, or export yours
+    to load there.</p>
+  <div class="row">
+    <label class="filebtn">Import backup<input type="file" id="saves-import" accept=".json,application/json"></label>
+    <button id="saves-export">Export backup</button>
+  </div>
+  <p id="saves-msg" class="summary"></p>
+  <button class="back" data-back>Done</button>
+</div>
+
 <div id="results" class="panel" hidden>
   <div id="res-face"></div>
   <table id="res-table"></table>
-  <div id="res-hi-wrap"><h2>Best times</h2><div class="summary" id="res-hi-note"></div><table id="res-hi"></table></div>
+  <div id="res-hi-wrap"><h2>Best times</h2><div class="summary" id="res-hi-note"></div><table id="res-hi"></table>
+    <div class="row"><label for="res-name">Your name</label><input id="res-name" maxlength="16" spellcheck="false" autocomplete="off"></div></div>
   <div class="menu-buttons">
     <button id="res-again" class="primary">Race again</button>
     <button id="res-replay">View replay</button>
@@ -174,6 +206,6 @@
   <button id="rb-cam" title="Camera (C)">🎥</button>
   <button id="rb-exit" title="Exit (Esc)">✕</button>
 </div>
-<script type="module" src="src/main.js"></script>
+<script type="module" src="src/start.js"></script>
 </body>
 </html>

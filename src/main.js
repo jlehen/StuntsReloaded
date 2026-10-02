@@ -1,8 +1,10 @@
-// App: loads the original files, boots the engine, runs menus, races and replays.
-import { preload, getFile, loadCachedFiles, addUserFiles } from './files.js';
-import { boot, loadTrack, loadReplay, setupRace, step, state, gameconfig, carId, td } from './race.js';
+// App: boots the engine on the game copy start.js loaded, runs menus, races and replays.
+import { getFile } from './files.js';
+import { boot, loadTrack, loadReplay, replayBuild, setupRace, step, state, gameconfig, carId, td, RPL_HEADER } from './race.js';
 import { G, M, A, rsw, farptr } from './mem.js';
-import { simd_player } from './structs.js';
+import { simd_player, fps } from './structs.js';
+import { MS, VERSION, rules } from './version.js';
+import { CARS, BUILDS, available, chooseBuild, addUserFiles } from './store.js';
 import { createFx, addDetail, KIND } from './fx.js';
 import { THREE, matCar, initMaterials, loadShapes, buildTrack, buildCar, carPose, paintColor, buildTruck, buildHorizon, paintHex, animateWheels, animateTrack, buildDebris, updateDebris, buildClouds, buildSigns, updateSigns } from './render.js';
 import { multiply_and_scale, sin_fast, cos_fast } from './math.js';
@@ -12,13 +14,9 @@ import { initUI, show, showResults } from './ui.js';
 import { createEditor } from './editor.js';
 import { enablePorts } from './ports.js';
 import { initAudio, updateAudio, setMuted, isMuted } from './audio.js';
-import { tweaks, setTweaks, isDefault, describeTweaks, replayTrailer, DEFAULTS } from './tweaks.js';
+import { tweaks, setTweaks, isDefault, describeTweaks, replayTrailer, replayTweaks, DEFAULTS } from './tweaks.js';
+import { parseHig, buildHig, parseBackup, buildBackup } from './interop.js';
 
-const CARS = ['COUN', 'ANSX', 'AUDI', 'FGTO', 'JAGU', 'LANC', 'LM02', 'P962', 'PC04', 'PMIN', 'VETT'];
-const GAME_FILES = ['GAME.EXE', 'GAME1.P3S', 'GAME2.P3S', 'GAME.PRE', 'SDMAIN.PVS', 'SDTITL.PVS', 'SDOSEL.PVS', 'DEFAULT.TRK', 'DEFAULT.RPL',
-  ...CARS.flatMap(c => [`CAR${c}.RES`, `ST${c}.P3S`, `STDA${c}.PVS`, `STDB${c}.PVS`]),
-  ...[1, 2, 3, 4, 5, 6].flatMap(i => [`OPP${i}.PRE`, `OPP${i}WIN.PVS`, `OPP${i}LOSE.PVS`]),
-  'DESERT.PVS', 'TROPICAL.PVS', 'ALPINE.PVS', 'CITY.PVS', 'COUNTRY.PVS'];
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const store = { get: (k, d) => { try { return JSON.parse(localStorage.getItem('stunts.' + k)) ?? d; } catch { return d; } },
@@ -42,38 +40,18 @@ const remoteTracks = (async () => {
   }))).filter(([, b]) => b.length >= 1801));
 })().catch(e => { console.warn(e); return {}; });
 
-// Game files: served from game/, else the user's own copy (cached in IndexedDB), else restunts' copy on GitHub.
-await preload(GAME_FILES);
-if (!getFile('GAME.EXE')) await loadCachedFiles();
-if (!getFile('GAME.EXE')) await preload(GAME_FILES.map(n => n === 'GAME.EXE' ? 'game.exe' : n), // lower-case there
-  'https://raw.githubusercontent.com/4d-stunts/restunts/master/stunts/');
-if (!getFile('GAME.EXE')) await askForFiles();
-async function askForFiles() {
-  $('status').textContent = '';
-  $('files').hidden = false;
-  await new Promise(resolve => {
-    const take = async list => {
-      await addUserFiles(list);
-      if (getFile('GAME.EXE') && getFile('GAME1.P3S')) resolve();
-      else $('files-msg').textContent = 'That folder does not look like Stunts 1.1 (GAME.EXE, GAME1.P3S… are missing).';
-    };
-    $('files-pick').onchange = e => take(e.target.files);
-    addEventListener('dragover', e => e.preventDefault());
-    addEventListener('drop', e => { e.preventDefault(); take(e.dataTransfer.files); });
-  });
-  $('files').hidden = true;
-}
 if (!params.has('original')) enablePorts(); // ?original runs only the original code
+rules.playstunts = MS && !params.has('original'); // where playstunts departs from the original, follow it
 boot(getFile('GAME.EXE'));
 initMaterials();
 const shapes = { ...loadShapes('GAME1.P3S'), ...loadShapes('GAME2.P3S') };
 
 // --- Renderer, race scene, showroom -------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(devicePixelRatio);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); // beyond 2 the cost grows faster than the sharpness
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMapping = THREE.CustomToneMapping; // render.js: the original palette's colours as they are
 document.body.prepend(renderer.domElement);
 const scene = new THREE.Scene();
 const skyScene = new THREE.Scene(); // horizon and clouds, drawn in a separate pass behind the world
@@ -119,7 +97,11 @@ addEventListener('resize', resize);
 
 // --- Settings, tracks, highscores ---------------------------------------------------------
 const settings = Object.assign({ car: 'COUN', paint: 0, manual: false, opponent: 0, oppCar: 'PMIN', track: 'DEFAULT', enhanced: true,
-  assist: false, fragility: 100 }, store.get('settings', {})); // assist, fragility: the tweaks (tweaks.js)
+  assist: false, fragility: 100, name: '', view: 0, chase: 1, fps: false }, store.get('settings', {})); // assist, fragility: the tweaks (tweaks.js)
+// Best times are kept per track; apart for each combination of tweaks, and for each build (the
+// two drive differently). Replays the player keeps: name -> base64 of the .RPL.
+const hiKey = (track, t = tweaks) => `hi${isDefault(t) ? '.' : `:${t.assist ? 'a' : ''}${t.fragility}:`}${MS ? 'ms.' : ''}${track}`;
+const replays = store.get('replays', {});
 fx.enabled = settings.enhanced || params.has('enhanced');
 const tracks = store.get('tracks', {}); // name -> base64 of the 1802-byte .TRK
 const b64 = { enc: u => btoa(String.fromCharCode(...u)), dec: s => Uint8Array.from(atob(s), c => c.charCodeAt(0)) };
@@ -152,6 +134,7 @@ function rebuildScene() {
     scene.add(oppObj);
   }
   dashArt = null;
+  watchOpponent = false;
 }
 
 // --- Modes --------------------------------------------------------------------------------
@@ -172,8 +155,9 @@ function configure() {
   gameconfig.game_recordedframes = 0;
 }
 function startRace() {
-  loadTrack(feed ? feed.subarray(0x1a, 0x1a + 1802) : trackBytes(settings.track));
+  loadTrack(feed ? feed.subarray(RPL_HEADER, RPL_HEADER + 1802) : trackBytes(settings.track));
   configure();
+  if (feed) M.set(feed.subarray(0, 22), A.gameconfig); // its cars, gearbox and opponent
   setTweaks(params.has('original') ? DEFAULTS : settings); // the tweaks live in the ports
   tapped.clear();
   M.fill(0, td('td16_rpl_buffer'), td('td16_rpl_buffer') + 0x2ee0);
@@ -189,10 +173,21 @@ function startRace() {
   G.game_replay_mode = 1;
   rebuildScene();
   resetPoses();
+  camMode = settings.view;
   mode = 'race';
   hideMenus();
 }
 function startReplay(bytes, { attract = false } = {}) {
+  // A replay only plays back on the build that recorded it: the two drive differently.
+  const build = replayBuild(bytes);
+  if (build && build !== VERSION) {
+    if (!available.includes(build)) alert(`This replay was recorded with ${BUILDS[build]}, which drives differently. Add that game's files (main menu) to watch it.`);
+    else if (confirm(`This replay was recorded with ${BUILDS[build]}. Switch to it?`)) {
+      try { sessionStorage.setItem('stunts.replay', b64.enc(bytes)); } catch { /* too large to carry over: load it again */ }
+      return chooseBuild(build);
+    }
+    return toMenu();
+  }
   replayFrames = loadReplay(bytes);
   try { setupRace(); } catch (e) { alert('Cannot play this replay: ' + e.message); return toMenu(); }
   G.game_replay_mode = 2;
@@ -201,8 +196,8 @@ function startReplay(bytes, { attract = false } = {}) {
   resetPoses();
   mode = attract ? 'attract' : 'replay';
   paused = false; replaySpeed = 1; $('rb-speed').textContent = '1×';
-  if (attract) camMode = 2;
-  else { hideMenus(); $('replaybar').hidden = false; }
+  camMode = attract ? 2 : settings.view; // the menu's demo is seen from the trackside cameras
+  if (!attract) { hideMenus(); $('replaybar').hidden = false; }
 }
 function toMenu() {
   startReplay(getFile('DEFAULT.RPL'), { attract: true });
@@ -220,8 +215,8 @@ function hideMenus() {
 // The race's replay bytes: header (GAMEINFO), track, inputs, and the tweaks it was driven with.
 function replayBytes() {
   const hdr = td('td13_rpl_header');
-  M.copyWithin(hdr, A.gameconfig, A.gameconfig + 0x1a);
-  const size = 0x1a + 1802 + gameconfig.game_recordedframes, trailer = replayTrailer(), bytes = new Uint8Array(size + trailer.length);
+  M.copyWithin(hdr, A.gameconfig, A.gameconfig + RPL_HEADER);
+  const size = RPL_HEADER + 1802 + gameconfig.game_recordedframes, trailer = replayTrailer(), bytes = new Uint8Array(size + trailer.length);
   bytes.set(M.subarray(hdr, hdr + size));
   bytes.set(trailer, size);
   return bytes;
@@ -234,7 +229,16 @@ addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   keys.add(e.code);
   if (tweaks.assist) tapped.add(e.code);
-  if (e.code === 'KeyC' && mode !== 'attract') camMode = (camMode + 1) % 3;
+  if (e.code === 'KeyC' && mode !== 'attract') setView((camMode + 1) % 3);
+  // The original's (and playstunts') view keys: F1 in the car, F2 behind it, F3 trackside; T
+  // watches the opponent, D hides the dashboard.
+  const view = { F1: 1, F2: 0, F3: 2, F4: 0 }[e.code];
+  if (view !== undefined && mode !== 'attract') { setView(view); e.preventDefault(); }
+  if (e.code === 'KeyT' && mode !== 'attract' && oppObj) watchOpponent = !watchOpponent;
+  if (e.code === 'KeyD' && mode !== 'attract') dashHidden = !dashHidden;
+  // As playstunts: V cycles the chase camera's distance, F shows the frame rate.
+  if (e.code === 'KeyV' && mode !== 'attract') { settings.chase = (settings.chase + 1) % CHASE.length; setView(0); }
+  if (e.code === 'KeyF') { settings.fps = !settings.fps; store.set('settings', settings); $('fps').hidden = !settings.fps; }
   if (e.code === 'Escape') {
     if (mode === 'race' || mode === 'finishing') toMenu();
     else if (mode === 'replay') lastReplay ? finishToResults() : toMenu();
@@ -270,10 +274,11 @@ function stickSteer(x) {
   return quarters ? (x > 0 ? 4 : 8) | ((4 - quarters) << 6) : 0;
 }
 function inputByte() {
-  if (feed) return feed[0x1a + 1802 + (G.game_replay_mode === 1 ? 0 : state.game_frame)] ?? 0;
+  if (feed) return feed[RPL_HEADER + 1802 + (G.game_replay_mode === 1 ? 0 : state.game_frame)] ?? 0;
   const down = code => keys.has(code) || tapped.has(code);
   const b = (down('ArrowUp') || params.has('auto') ? 1 : 0) | (down('ArrowDown') ? 2 : 0) |
-    (down('ArrowRight') ? 4 : 0) | (down('ArrowLeft') ? 8 : 0) | (down('KeyA') ? 0x10 : 0) | (down('KeyZ') ? 0x20 : 0);
+    (down('ArrowRight') ? 4 : 0) | (down('ArrowLeft') ? 8 : 0) |
+    (down('KeyA') || down('Space') ? 0x10 : 0) | (down('KeyZ') || down('Enter') ? 0x20 : 0); // shifting: A / Z, or the original's Space / Enter
   tapped.clear();
   const pad = padByte();
   return b | (b & 12 ? pad & 0x3f : pad); // the keyboard steers at full deflection
@@ -308,15 +313,14 @@ function finishRace() {
     finished: p.car_crashBmpFlag === 3, drowned: p.car_crashBmpFlag === 2,
     frames: state.game_total_finish, penaltyFrames: state.game_penalty,
     topSpeed: Math.round(state.game_topSpeed / 256), jumps: state.game_jumpCount, impact: Math.round(state.game_impactSpeed / 256),
-    // Best times are kept per track, and apart for each combination of tweaks.
-    tweaks: describeTweaks(), hiKey: isDefault() ? 'hi.' + settings.track : `hi:${tweaks.assist ? 'a' : ''}${tweaks.fragility}:${settings.track}`,
+    tweaks: describeTweaks(), hiKey: hiKey(settings.track),
   };
   mode = gameconfig.game_opponenttype && state.opponentstate.car_crashBmpFlag === 0 ? 'finishing' : 'results';
   if (mode === 'finishing') $('status').textContent = 'Waiting for your opponent…';
   else finishToResults();
 }
 function finishLoop() {
-  const limit = 0x5dc * G.framespersec;
+  const limit = 0x5dc * fps();
   for (let i = 0; i < 400 && mode === 'finishing'; i++) {
     callTop('replay_unk2', 1, 0); // time limit only, nothing recorded
     step();
@@ -327,7 +331,7 @@ function finishToResults() {
   mode = 'results';
   $('status').textContent = '';
   $('hud').hidden = true; $('replaybar').hidden = true;
-  const fps = G.framespersec, o = state.opponentstate;
+  const rate = fps(), o = state.opponentstate;
   const r = { ...result, time: fmtTime(result.frames), penalty: result.penaltyFrames ? fmtTime(result.penaltyFrames) : 0, highscores: [] };
   if (gameconfig.game_opponenttype) {
     const oppDone = o.car_crashBmpFlag === 3;
@@ -338,10 +342,18 @@ function finishToResults() {
   }
   if (result.finished) {
     const key = result.hiKey, list = store.get(key, []);
-    const entry = { frames: result.frames, fps, car: carNames[settings.car], date: new Date().toLocaleDateString(), at: Date.now() };
+    // With what a .HIG record holds: the driver's name, and the opponent as the game writes it.
+    const cstr = a => { let t = ''; while (M[a]) t += String.fromCharCode(M[a++]); return t; };
+    const entry = { frames: result.frames, fps: rate, car: carNames[carId(gameconfig.game_playercarid)], date: new Date().toLocaleDateString(), at: Date.now(), name: settings.name,
+      opponent: gameconfig.game_opponenttype ? `${cstr(A.unk_46464)}/${cstr(A.gsna_string)}` : '', lost: !!r.opponent?.won };
     list.push(entry); list.sort((a, b) => a.frames / a.fps - b.frames / b.fps); list.length = Math.min(list.length, 10);
     store.set(key, list);
     r.highscores = list.map(h => ({ ...h, time: fmtTime(h.frames, h.fps), current: h.at === entry.at }));
+    r.rename = name => { // the name typed on the results screen
+      settings.name = entry.name = name; store.set('settings', settings);
+      const l = store.get(key, []), e = l.find(h => h.at === entry.at);
+      if (e) { e.name = name; store.set(key, l); }
+    };
   }
   showResults(app, r);
 }
@@ -358,34 +370,68 @@ function advancePoses() {
   carPose(state.playerstate, poses.cur); carPose(state.opponentstate, poses.ocur);
 }
 let camMode = 0; // 0 chase, 1 cockpit, 2 TV cameras
+// Chase camera distances (V): how far behind and above the car, how far ahead of it the camera
+// looks, and the field of view.
+const CHASE = [{ back: 150, up: 48, ahead: 70, fov: 56 }, { back: 215, up: 70, ahead: 90, fov: 58 }, { back: 300, up: 110, ahead: 0, fov: 60 }];
+let lean = 0; // the chase camera swings out of a turn with the steering, to show the road ahead
+let chaseYaw = 0, chaseY = 0; // its direction from the car, and its height
+let watchOpponent = false, dashHidden = false; // T: the outside views follow the opponent's car; D: no dashboard
+// The player's view is kept for the next races and replays.
+function setView(v) { camMode = settings.view = v; store.set('settings', settings); }
 const camPos = new THREE.Vector3(1e9, 0, 0), camTarget = new THREE.Vector3();
 function updateCamera(dt) {
   const cockpit = camMode === 1 && mode !== 'attract';
   carObj.visible = !cockpit;
   if (oppObj) oppObj.visible = true;
+  let fov = 60;
   if (cockpit) {
     // In-car camera (update_frame, cameramode 0): car position + car_height - 6 along the car's up axis.
     // The view centre sits in the windshield above the dashboard, as in the original.
     camera.setViewOffset(innerWidth, innerHeight * 1.35, 0, innerHeight * 0.35, innerWidth, innerHeight);
     camera.position.copy(carObj.position).add(new THREE.Vector3(0, simd_player.car_height - 6, 0).applyQuaternion(carObj.quaternion));
     camera.quaternion.copy(carObj.quaternion);
+    setFov(fov);
     return;
   }
   camera.clearViewOffset();
-  const look = carObj.position.clone().add(new THREE.Vector3(0, 30, 0));
+  const subject = watchOpponent && oppObj ? oppObj : carObj;
+  const look = subject.position.clone().add(new THREE.Vector3(0, 30, 0));
   if (camMode === 2) { // TV cameras placed by track_setup (trackdata9), picked per track section
-    const i = state.field_3F7[0], t9 = farptr(A.trackdata9);
+    const i = state.field_3F7[subject === oppObj ? 1 : 0], t9 = farptr(A.trackdata9);
     camPos.set(rsw(t9 + i * 6), rsw(t9 + i * 6 + 2) + G.word_44D20 + 0x5a, -rsw(t9 + i * 6 + 4));
     camTarget.copy(look);
+    // The cameras stand far from the track: zoom in so the car keeps a fair size on screen.
+    fov = Math.max(10, Math.min(60, 2 * Math.atan(200 / camPos.distanceTo(look)) * 180 / Math.PI));
   } else {
     // Chase camera. The car model faces -z in Three.js space, so local +z points backwards.
-    const back = new THREE.Vector3(0, 0, 1).applyQuaternion(carObj.quaternion); back.y = 0; back.normalize();
-    const want = carObj.position.clone().addScaledVector(back, 300).add(new THREE.Vector3(0, 110, 0));
-    if (camPos.distanceTo(want) > 1500) camPos.copy(want); else camPos.lerp(want, 1 - Math.exp(-dt * 4));
-    if (camTarget.distanceTo(look) > 1500) camTarget.copy(look); else camTarget.lerp(look, 1 - Math.exp(-dt * 12));
+    // It stays at its distance whatever the speed and turns after the car's heading, so the car
+    // swings a little in the frame through a bend; its height follows more slowly (jumps).
+    const c = CHASE[settings.chase] ?? CHASE[1];
+    const steer = (subject === carObj ? state.playerstate : state.opponentstate).car_steeringAngle / 240;
+    lean += (steer * 0.2 - lean) * (1 - Math.exp(-dt * 5));
+    const back = new THREE.Vector3(0, 0, 1).applyQuaternion(subject.quaternion); back.y = 0;
+    const jump = camPos.distanceTo(subject.position) > 1500; // a new race, a replay seek
+    if (back.lengthSq() > 0.04) { // (not while the car points straight up or down, in a loop)
+      const heading = Math.atan2(back.x, back.z);
+      const turn = Math.atan2(Math.sin(heading - chaseYaw), Math.cos(heading - chaseYaw));
+      chaseYaw = jump ? heading : chaseYaw + turn * (1 - Math.exp(-dt * 6));
+    }
+    const dir = new THREE.Vector3(Math.sin(chaseYaw + lean), 0, Math.cos(chaseYaw + lean));
+    const y = subject.position.y + c.up;
+    chaseY = jump ? y : chaseY + (y - chaseY) * (1 - Math.exp(-dt * 8));
+    camPos.copy(subject.position).addScaledVector(dir, c.back).setY(chaseY);
+    look.addScaledVector(dir, -c.ahead);
+    if (jump) camTarget.copy(look); else camTarget.lerp(look, 1 - Math.exp(-dt * 14));
+    fov = c.fov;
   }
   camera.position.copy(camPos);
   camera.lookAt(camTarget);
+  setFov(fov);
+}
+
+function setFov(fov) {
+  fov = camera.fov + (fov - camera.fov) * 0.2; // eased: the trackside cameras zoom, they do not jump
+  if (Math.abs(fov - camera.fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); fx.cameraChanged(); }
 }
 
 // Original dashboard art (STDAxxxx.PVS) with needles from SIMD, as in setup_car_shapes.
@@ -393,7 +439,7 @@ let dashArt = null;
 function drawDash() {
   const ctx = dash.getContext('2d');
   ctx.clearRect(0, 0, dash.width, dash.height);
-  if (camMode !== 1 || mode === 'attract' || mode === 'results') return;
+  if (camMode !== 1 || dashHidden || mode === 'attract' || mode === 'results') return;
   dashArt ??= Object.fromEntries(['dash', 'roof', 'whl1', 'whl2', 'whl3', 'ins2'].map(n => [n, bitmap(`STDA${carId(gameconfig.game_playercarid)}.PVS`, n)]));
   const s = dash.width / 320, oy = dash.height - 200 * s;
   ctx.imageSmoothingEnabled = false;
@@ -423,8 +469,8 @@ function drawDash() {
 }
 
 // --- HUD ----------------------------------------------------------------------------------
-function fmtTime(frames, fps = G.framespersec || 20) {
-  const s = frames / fps;
+function fmtTime(frames, rate = fps() || 20) {
+  const s = frames / rate;
   return `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
 }
 function updateHud() {
@@ -435,11 +481,21 @@ function updateHud() {
     (mode === 'replay' ? `<span>${paused ? 'paused' : replaySpeed > 1 ? replaySpeed + '×' : 'replay'}</span>` : '');
 }
 
+function download(name, data) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([data]));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 // --- App API for the UI -------------------------------------------------------------------
 // Name: 'Nickname]Name' or just 'Name' as the first line(s) of the description.
 const oppName = i => { const d = text(`OPP${i}.PRE`, 'edes'); return d[1] || d[0] || `Opponent ${i}`; };
 const app = {
   CARS, settings,
+  builds: { available, names: BUILDS, current: VERSION, choose: chooseBuild, addFiles: addUserFiles,
+    note: MS ? '' : 'Stunts 1.1 rules. playstunts drives 4D Sports Driving 1.1: add that game\'s files (folder or .zip) to race and trade replays with it.' },
   save: () => { store.set('settings', settings); fx.enabled = settings.enhanced || params.has('enhanced'); },
   startRace, startReplay, toMenu,
   carName: c => carNames[c],
@@ -458,12 +514,65 @@ const app = {
     if (showCar) showroom.add(showCar);
   },
   viewReplay: () => startReplay(lastReplay),
+  // Saves the last race's replay as a file, and keeps it in the list (one per track).
   saveReplay() {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([lastReplay]));
-    a.download = `${settings.track}.RPL`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    download(`${settings.track}.RPL`, lastReplay);
+    replays[settings.track] = b64.enc(lastReplay); store.set('replays', replays);
+  },
+  replayNames: () => Object.keys(replays).sort(),
+  playReplay: n => startReplay(b64.dec(replays[n])),
+  deleteReplay: n => { delete replays[n]; store.set('replays', replays); },
+  // Files dropped on the page: a backup, a replay, tracks, or a copy of the game (which reloads
+  // the page on its build). Returns a line for the menu, if any.
+  async dropFiles(files) {
+    const named = re => files.filter(f => re.test(f.name));
+    for (const f of named(/\.json$/i)) { const n = app.importBackup(await f.text()); return `Imported ${n.tracks} tracks, ${n.replays} replays and ${n.scores} best times.`; }
+    for (const f of named(/\.rpl$/i)) return void startReplay(new Uint8Array(await f.arrayBuffer()));
+    const trks = named(/\.trk$/i);
+    if (trks.length && !named(/\.(exe|hdr|zip)$/i).length) {
+      for (const f of trks) app.importTrack(f.name.replace(/\.trk$/i, '').toUpperCase().slice(0, 8), new Uint8Array(await f.arrayBuffer()));
+      return `Imported ${trks.length} track${trks.length > 1 ? 's' : ''}.`;
+    }
+    const build = await addUserFiles(files);
+    if (build) chooseBuild(build);
+    return build ? '' : 'Nothing to load in those files.';
+  },
+  // playstunts' backup file (interop.js): this build's tracks, kept replays and best times, as it
+  // would have saved them. Tweaked races and replays stay here: it could not play them.
+  exportBackup() {
+    const files = Object.entries(tracks).map(([name, t]) => ({ name, ext: 'TRK', bytes: b64.dec(t) }));
+    if (MS) {
+      for (const [name, r] of Object.entries(replays)) {
+        const bytes = b64.dec(r);
+        if (replayBuild(bytes) === 'ms' && replayTweaks(bytes, bytes.length - 8) === DEFAULTS) files.push({ name, ext: 'RPL', bytes });
+      }
+      for (const name of ['DEFAULT', ...Object.keys(tracks), ...Object.keys(remote)]) {
+        const list = store.get(hiKey(name, DEFAULTS), []).filter(h => h.fps === 20);
+        if (list.length) files.push({ name, ext: 'HIG', bytes: buildHig(list) });
+      }
+    }
+    download(`stunts-saves-${new Date().toISOString().slice(0, 10)}.json`, buildBackup(files));
+    return files.length;
+  },
+  // Takes what it holds: tracks, replays (kept; played on the build that recorded them) and
+  // best times (merged into this build's). Returns counts for the menu.
+  importBackup(text) {
+    const n = { tracks: 0, replays: 0, scores: 0 };
+    for (const f of parseBackup(text)) {
+      if (f.ext === 'TRK' && f.bytes.length === 1802) { tracks[f.name] = b64.enc(f.bytes); n.tracks++; }
+      else if (f.ext === 'RPL' && f.bytes.length > 0x18 + 1802) { replays[f.name] = b64.enc(f.bytes); n.replays++; }
+      else if (f.ext === 'HIG' && f.bytes.length === 364 && MS) {
+        const key = hiKey(f.name, DEFAULTS), list = store.get(key, []);
+        for (const h of parseHig(f.bytes)) {
+          if (list.some(e => e.frames === h.frames && (e.name ?? '') === h.name && e.car === h.car)) continue;
+          list.push({ ...h, fps: 20, date: '', at: Date.now() + n.scores++ });
+        }
+        list.sort((a, b) => a.frames / a.fps - b.frames / b.fps); list.length = Math.min(list.length, 10);
+        store.set(key, list);
+      }
+    }
+    store.set('tracks', tracks); store.set('replays', replays);
+    return n;
   },
 };
 const editor = createEditor({
@@ -483,7 +592,7 @@ const ui = initUI(app);
 $('rb-play').onclick = () => { paused = !paused; };
 $('rb-restart').onclick = () => startReplay(lastReplay ?? getFile('DEFAULT.RPL'));
 $('rb-speed').onclick = () => { replaySpeed = replaySpeed >= 4 ? 1 : replaySpeed * 2; $('rb-speed').textContent = replaySpeed + '×'; };
-$('rb-cam').onclick = () => { camMode = (camMode + 1) % 3; };
+$('rb-cam').onclick = () => setView((camMode + 1) % 3);
 // Seeking like the original: restore_gamestate (30 s snapshots), then simulate up to the target.
 $('rb-seek').oninput = e => {
   const target = Math.min(+e.target.value, replayFrames);
@@ -495,7 +604,21 @@ $('rb-exit').onclick = () => (lastReplay ? finishToResults() : toMenu());
 
 // --- Main loop: fixed-rate simulation, interpolated rendering -------------------------------
 let acc = 0, last = performance.now();
+// Frame rate display (F), as playstunts': now, the average, and the slowest 1 % of the last minute.
+const frameTimes = [];
+let fpsShown = 0;
+$('fps').hidden = !settings.fps;
+function showFps(now, ms) {
+  frameTimes.push(ms);
+  if (frameTimes.length > 3600) frameTimes.shift();
+  if (now - fpsShown < 500) return;
+  fpsShown = now;
+  const recent = frameTimes.slice(-30), mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+  const slow = [...frameTimes].sort((a, b) => b - a).slice(0, Math.max(1, Math.round(frameTimes.length / 100)));
+  $('fps').textContent = `FPS ${Math.round(1000 / mean(recent))} · avg ${Math.round(1000 / mean(frameTimes))} · 1% low ${Math.round(1000 / mean(slow))}`;
+}
 function frame(now) {
+  if (settings.fps) showFps(now, now - last);
   const dt = Math.min(now - last, 250) / 1000; last = now;
   if (editor.active) { editor.render(); requestAnimationFrame(frame); return; }
   if (inShowroom) {
@@ -509,7 +632,7 @@ function frame(now) {
     requestAnimationFrame(frame);
     return;
   }
-  const tickS = 1 / (G.framespersec || 20);
+  const tickS = 1 / (fps() || 20);
   if (mode === 'finishing') finishLoop();
   else if (mode !== 'results') {
     acc += dt * (mode === 'replay' ? replaySpeed : 1);
@@ -563,15 +686,19 @@ function renderWorld(cam) {
 }
 
 resize();
+const carried = sessionStorage.getItem('stunts.replay'); // a replay that asked for this build (startReplay)
+sessionStorage.removeItem('stunts.replay');
 if (params.has('auto') || params.has('race') || feed) startRace(); // debug: race (?auto holds the accelerator)
 else if (params.has('skip')) startReplay(getFile('DEFAULT.RPL'));
+else if (carried) startReplay(b64.dec(carried));
 else toMenu();
 $('status').textContent = '';
 // Debugging/testing handle (tools/browse.mjs): stunts.ff(n) runs n ticks at once.
 window.stunts = {
-  app, state, G, getFile, scene, fx, tweaks, inputByte,
+  app, state, G, getFile, scene, fx, tweaks, inputByte, version: VERSION,
   get mode() { return mode; },
   ff(n) { for (let i = 0; i < n && mode !== 'results'; i++) { tick(); advancePoses(); } return state.game_frame; },
+  seek(f) { $('rb-seek').oninput({ target: { value: f } }); return state.game_frame; }, // a replay, to frame f
   // Height of the rendered track under each physics wheel contact point (should match wheel y).
   checkWheels() {
     const ray = new THREE.Raycaster();

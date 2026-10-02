@@ -3,7 +3,7 @@
 import { bootWorld, gameFile, cpu } from './oracle.mjs';
 import { loadReplay, setupRace, step } from '../src/race.js';
 import { enablePorts } from '../src/ports.js';
-import PROCS from '../src/procs.js';
+import { PROCS } from '../src/engine.js';
 
 const procs = Object.entries(PROCS).filter(([k]) => !/^seg\d+$/.test(k)).sort((a, b) => a[1] - b[1]);
 const procAt = a => { let lo = 0, hi = procs.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (procs[m][1] <= a) lo = m; else hi = m - 1; } return procs[lo][0]; };

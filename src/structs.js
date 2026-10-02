@@ -1,5 +1,8 @@
-// Original struct layouts (restunts c/externs.h, c/math.h, c/shape3d.h), packed.
-import { struct, A } from './mem.js';
+// Original struct layouts (restunts c/externs.h, c/math.h, c/shape3d.h), packed. The Mindscape
+// build (version.js) has no second wheel-position array in CARSTATE (so GAMESTATE is 0x430 bytes)
+// and no frame rate in the replay header.
+import { struct, A, G } from './mem.js';
+import { MS } from './version.js';
 
 export const VECTOR = struct([['x', 'i16'], ['y', 'i16'], ['z', 'i16']], 6);
 export const VECTORLONG = struct([['lx', 'i32'], ['ly', 'i32'], ['lz', 'i32']], 12);
@@ -21,7 +24,7 @@ export const CARSTATE = struct([
   ['car_angle_z', 'i16'], ['car_40MfrontWhlAngle', 'i16'], ['field_42', 'i16'], ['car_demandedGrip', 'i16'],
   ['car_surfacegrip_sum', 'i16'], ['field_48', 'i16'], ['car_trackdata3_index', 'i16'],
   ['car_rc1', 'i16', 4], ['car_rc2', 'i16', 4], ['car_rc3', 'i16', 4], ['car_rc4', 'i16', 4], ['car_rc5', 'i16', 4],
-  ['car_whlWorldCrds1', VECTOR, 4], ['car_whlWorldCrds2', VECTOR, 4],
+  ['car_whlWorldCrds1', VECTOR, 4], ...(MS ? [] : [['car_whlWorldCrds2', VECTOR, 4]]),
   ['car_vec_unk3', VECTOR], ['car_vec_unk4', VECTOR], ['car_vec_unk5', VECTOR],
   ['field_B6', 'i16'], ['field_B8', 'i16'], ['field_BA', 'i16'],
   ['car_is_braking', 'i8'], ['car_is_accelerating', 'i8'], ['car_current_gear', 'i8'],
@@ -29,7 +32,7 @@ export const CARSTATE = struct([
   ['car_surfaceWhl', 'i8', 4], ['car_engineLimiterTimer', 'i8'], ['car_slidingFlag', 'i8'], ['field_C8', 'i8'],
   ['car_crashBmpFlag', 'i8'], ['car_changing_gear', 'i8'], ['car_fpsmul2', 'i8'], ['car_transmission', 'i8'],
   ['field_CD', 'i8'], ['field_CE', 'i8'], ['field_CF', 'i8'],
-], 0xd0);
+], MS ? 0xb8 : 0xd0);
 
 export const GAMESTATE = struct([
   ['game_longs1', 'i32', 24], ['game_longs2', 'i32', 24], ['game_longs3', 'i32', 24],
@@ -45,7 +48,7 @@ export const GAMESTATE = struct([
   ['game_3F6autoLoadEvalFlag', 'i8'], ['field_3F7', 'i8', 2], ['field_3F9', 'i8'], ['field_3FA', 'i8', 48],
   ['field_42A', 'i8'], ['field_42B', 'i8', 24], ['field_443', 'i8', 24],
   ['field_45B', 'i8'], ['field_45C', 'i8'], ['field_45D', 'i8'], ['field_45E', 'i8'], ['field_45F', 'i8'],
-], 0x460);
+], MS ? 0x430 : 0x460);
 
 export const SIMD = struct([
   ['num_gears', 'i8'], ['simd_unk', 'i8'], ['car_mass', 'i16'], ['braking_eff', 'i16'], ['idle_rpm', 'i16'],
@@ -60,9 +63,9 @@ export const SIMD = struct([
 export const GAMEINFO = struct([
   ['game_playercarid', 'u8', 4], ['game_playermaterial', 'i8'], ['game_playertransmission', 'i8'],
   ['game_opponenttype', 'i8'], ['game_opponentcarid', 'u8', 4], ['game_opponentmaterial', 'i8'],
-  ['game_opponenttransmission', 'i8'], ['game_trackname', 'u8', 9], ['game_framespersec', 'u16'],
+  ['game_opponenttransmission', 'i8'], ['game_trackname', 'u8', 9], ...(MS ? [] : [['game_framespersec', 'u16']]),
   ['game_recordedframes', 'u16'],
-], 0x1a);
+], MS ? 0x18 : 0x1a);
 
 // Near pointers (DS offsets) are u16.
 export const TRKOBJINFO = struct([
@@ -85,3 +88,7 @@ export const state = new GAMESTATE(A.state);
 export const simd_player = new SIMD(A.simd_player);
 export const simd_opponent = new SIMD(A.simd_opponent);
 export const gameconfig = new GAMEINFO(A.gameconfig);
+
+// Simulation rate: 20 frames per second, or 10 with Broderbund's slow-machine setting (the
+// Mindscape build has no such setting, nor the globals behind it).
+export const fps = MS ? () => 20 : () => G.framespersec;

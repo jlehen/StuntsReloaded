@@ -1,12 +1,13 @@
 // Player car step (seg001): player_op, update_player_state (wheel/terrain/wall integration),
 // detect_penalty and the path target helpers sub_18D60 / sub_18D06. Ported from the asm.
-import { M, A, G, U, DS, DSEG, rb, rsb, rw, rsw, rsd, wb, ww, wd, s8, s16, u16, farptrAt, frame, alloca } from './mem.js';
-import { CARSTATE, SIMD, state, gameconfig } from './structs.js';
+import { M, A, G, U, DS, DSEG, rb, rsb, rw, rsw, rsd, wb, ww, wd, s8, s16, u16, sdiv2, farptrAt, frame, alloca } from './mem.js';
+import { CARSTATE, SIMD, state, gameconfig, fps } from './structs.js';
 import { call, provide, defineSigs, isEnabled, setNextReturn } from './calls.js';
 import { cpu, procPtr } from './engine.js';
 import { origStack, retAddr } from './stack.js';
 import * as m from './math.js';
 import { tweaks, crashLimit, survives } from './tweaks.js';
+import { MS, rules } from './version.js';
 
 defineSigs({ audio_unk3: 'ww', state_op_unk: 'www', audio_op_unk2: 'wwwwwwwww', sub_18D06: 'nw' });
 
@@ -36,6 +37,7 @@ function origFrame(proc, size, body, zero = false) {
 // origStack().invoke for a call site in `from`, which may be a code label inside the proc (the
 // call layer pushes a JS callee's args; we supply the original call site's return address).
 function invoke(st, from, to, nth, ...args) {
+  if (MS) return call[to](...args);
   const [cs, ip] = retAddr(from, to, nth);
   const [sp, bp] = [cpu.sp, cpu.bp];
   cpu.sp = st.sp; cpu.bp = st.bp;
@@ -81,8 +83,24 @@ const speedScaled = (speed2, fps10) => Math.floor(speed2 * 0x580 / (fps10 ? 0x1e
 // scenery and start-gate collisions. State globals: pState_lvec1_* (new position), pState_minusRotate_*_1
 // (new rotation z, x=pitch from rotate.y, y=yaw from rotate.x).
 export function update_player_state(pState, pSimd, oState, oSimd, mplayerFlag) {
-  origFrame('update_player_state', 0x1e4, (L, st) => ups(L, st, pState, pSimd, oState, oSimd, mplayerFlag & 0xff), true);
+  origFrame('update_player_state', 0x1e4, (L, st) => {
+    const flag = mplayerFlag & 0xff;
+    if (!rules.playstunts) return ups(L, st, pState, pSimd, oState, oSimd, flag);
+    // playstunts does not clear the frame: the wheel angles a stopped car reads (var_140, which
+    // the original only writes when the car moves) are those of the car's previous call, kept
+    // in memory where the original's stack would hold them. There the opponent's frame lies 26
+    // bytes above the player's, so its third wheel origin lands on the player's angles.
+    const kept = KEPT + (flag ? 8 : 0), WHL = L(0x140), L176 = L(0x176);
+    M.copyWithin(WHL, kept, kept + 8);
+    try { return ups(L, st, pState, pSimd, oState, oSimd, flag); } finally {
+      M.copyWithin(kept, WHL, WHL + 8);
+      if (flag) M.copyWithin(KEPT, L176 + 28, L176 + 36); // y and z of the opponent's wheel 2
+    }
+  }, true);
 }
+// Where they are kept: free DGROUP bytes, the player's 4 words then the opponent's (cleared by
+// race.js for each race; like playstunts' they are not part of the replay snapshots).
+export const KEPT = DS + 0xaff0;
 
 function ups(L, st, pState, pSimd, oState, oSimd, flag) {
   const p = new CARSTATE(pState);
@@ -123,8 +141,8 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
   G.pState_minusRotate_z_1 = G.pState_minusRotate_z_2 = rsw(rot + 4);
   G.pState_minusRotate_x_1 = G.pState_minusRotate_x_2 = rsw(rot + 2);
   G.pState_minusRotate_y_1 = G.pState_minusRotate_y_2 = rsw(rot);
-  const f40sar2 = p.car_sumSurfAllWheels !== 0 ? p.car_40MfrontWhlAngle >> 2 : 0;
-  const spd = speedScaled(p.car_speed2, G.framespersec === 10);
+  const f40sar2 = p.car_sumSurfAllWheels === 0 ? 0 : MS ? sdiv2(p.car_40MfrontWhlAngle, 2) : p.car_40MfrontWhlAngle >> 2;
+  const spd = speedScaled(p.car_speed2, fps() === 10);
 
   const z1 = () => G.pState_minusRotate_z_1, x1 = () => G.pState_minusRotate_x_1, y1 = () => G.pState_minusRotate_y_1;
   let mat = m.mat_rot_zxy(s16(-z1()), s16(-x1()), s16(-y1()), 0);
@@ -170,7 +188,9 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
     }
   }
 
-  // Wall hit by wheel w: pushes all wheels back and returns true (the pass restarts).
+  // Wall hit by wheel w: pushes all wheels back and returns true (the pass restarts), or BOUNCE
+  // (fragility tweak: undo the tick, see bounceBack).
+  const BOUNCE = 2;
   const wallHit = w => {
     const l1 = L1C0 + 12 * w, wc = p.$car_whlWorldCrds1 + 6 * w;
     setv(V182, rsw(wc) - G.wallStartX, 0, rsw(wc + 4) - G.wallStartZ);
@@ -181,8 +201,12 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
     if ((rsw(V1C + 4) > 0 && rsw(VC + 4) > 0) || (rsw(V1C + 4) < 0 && rsw(VC + 4) < 0)) return false; // same side
     let swapped = 0;
     if (rsw(V1C + 4) > rsw(VC + 4)) { swapped = 1; cpv(VFC, V1C); cpv(V1C, VC); cpv(VC, VFC); }
+    // playstunts, car at rest (the original would divide by spd below): there is no travel to
+    // split, and the wheels are moved clear along the wall's normal instead (below).
+    const atRest = rules.playstunts && spd === 0;
     let f4, f2; // spd split at the wall crossing
-    if (rsw(V1C + 4) === 0) { f4 = spd; f2 = 0; }
+    if (atRest) f4 = f2 = 0;
+    else if (rsw(V1C + 4) === 0) { f4 = spd; f2 = 0; }
     else if (rsw(VC + 4) === 0) { f4 = 0; f2 = spd; }
     else {
       m.vector_op_unk(V1C, VC, VFC, 0);
@@ -196,19 +220,35 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
     else { ee = (G.wallOrientation + 0x200) & 0x3ff; ww(VFC, -0x300); }
     if (swapped) ww(VFC, -rsw(VFC));
     m.mat_mul_vector(VFC, m.mat_rot_zxy(s16(-z1()), s16(-x1()), ee, 0), V1C); // bounce vector
+    if (atRest) {
+      // Clear of the wall: wheel w ends 12 units from it, on the side it was on.
+      const a0 = L176 + 12 * w;
+      setv(V182, sar6(a0) - G.wallStartX, 0, sar6(a0 + 8) - G.wallStartZ);
+      m.mat_mul_vector(V182, MAT134, VC);
+      setv(VFC, 0, 0, ((swapped ? -12 : 12) - rsw(VC + 4)) << 6);
+      m.mat_rot_y(MAT134, s16(G.wallOrientation + 0x100));
+      m.mat_mul_vector(VFC, MAT134, V1C);
+    }
     let a = (-y1() - ee) & 0x3ff, neg = false;
     if (a > 0x100) { a = 0x400 - a; neg = true; }
-    const maxSpeed = ((0x64 - (s16(0x46 * a) >> 8)) & 0xff) << 8; // head-on hits crash at lower speed
+    const maxSpeed = ((0x64 - (MS ? sdiv2(0x46 * a, 8) : s16(0x46 * a) >> 8)) & 0xff) << 8; // head-on hits crash at lower speed
     if (p.car_speed2 > limit(maxSpeed)) {
       p.car_36MwhlAngle = (neg ? -a : a) << 1;
       crash(1, c1, 2);
-    } else if (p.car_speed2 > maxSpeed) p.car_speed = p.car_speed2 = maxSpeed; // tougher car: the wall takes the excess speed
+    } else if (p.car_speed2 > maxSpeed) {
+      // Tougher car: the wall takes the excess speed. In the Mindscape build a slowed car would
+      // then seep through the wall (its wheels are put back on their way when they dip below the
+      // ground, which they do there after the push back), so it bounces off as from a tree.
+      if (MS) return BOUNCE;
+      p.car_speed = p.car_speed2 = maxSpeed;
+    }
     p.field_CF |= 0x10;
     for (let i = 0; i < 4; i++) {
       const a1 = L1C0 + 12 * i, a0 = L176 + 12 * i;
       if (f4 === 0) setv(VC, 0, 0, 0);
       else for (let c = 0; c < 3; c++) ww(VC + 2 * c, lmuldiv(rsd(a1 + 4 * c) - rsd(a0 + 4 * c), f4, spd));
       for (let c = 0; c < 3; c++) wd(a1 + 4 * c, rsd(a0 + 4 * c) + s16(rsw(VC + 2 * c) + rsw(V1C + 2 * c)));
+      if (atRest) M.copyWithin(a0, a1, a1 + 12); // and that is where the wheels now start from
     }
     return true;
   };
@@ -281,7 +321,7 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
       if (G.nextPosAndNormalIP > 0) {
         if (F0 > 0 && G.nextPosAndNormalIP < 0x18) addlv(l1, VE4);
         else {
-          for (let i = G.framespersec === 10 ? 2 : 1; i > 0; i--) {
+          for (let i = fps() === 10 ? 2 : 1; i > 0; i--) {
             ww(rc1 + 2 * w, rsw(rc1 + 2 * w) + rsw(A.word_3BD72 + 2 * w));
             wd(l1 + 4, rsd(l1 + 4) - rsw(rc1 + 2 * w));
           }
@@ -294,9 +334,10 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
       ww(W16 + 2 * w, np);
       if (np > 0) return;
       if (np < 0 && belowPlane(w)) continue;
-      // On the ground: rc1 is the vertical speed it landed with.
-      if (rsw(rc1 + 2 * w) > 0xfa) p.field_CF |= 0x20;
-      if (rsw(rc1 + 2 * w) > limit(0x5aeb)) crash(1, c1, 4);
+      // On the ground: rc1 is the vertical speed it landed with. A hard landing wrecks the car
+      // in the Mindscape build; Broderbund's limit is out of reach.
+      if (rsw(rc1 + 2 * w) > (MS ? 0xbe : 0xfa)) p.field_CF |= 0x20;
+      if (rsw(rc1 + 2 * w) > limit(MS ? 0x3a3 : 0x5aeb)) crash(1, c1, 4);
       ww(rc1 + 2 * w, 0);
       return;
     }
@@ -319,6 +360,7 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
       sar6v(V1C6, l1);
       G.nextPosAndNormalIP = inputmode2() ? rsw(V1C6 + 2) : m.plane_origin_op(G.planindex, rsw(V1C6), rsw(V1C6 + 2), rsw(V1C6 + 4));
       if (G.wallindex !== -1 && G.nextPosAndNormalIP > G.elRdWallRelated && G.nextPosAndNormalIP < G.wallHeight) restart = wallHit(w);
+      if (restart === BOUNCE) return bounceBack();
       if (!restart) ground(w);
     }
     if (!restart) break;
@@ -394,7 +436,19 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
       if (G.planindex < 4 || (m.cos_fast(z1()) < 0) !== (m.cos_fast(x1()) < 0)) roll = true;
     };
     const ea = m.mat_rot_zxy(s16(-z1()), s16(-x1()), s16(-y1()), 0);
-    for (let w = 0; w < 4; w++) {
+    // Mindscape: the roof point against the wheel below it, more than 6 units on either side of
+    // the surface under the roof (it keeps no roof positions from the tick before).
+    if (MS) for (let w = 0; w < 4; w++) {
+      roofPoint(w, ea);
+      c2('build_track_object', 0, V1C6, V1C6);
+      const h = m.plane_origin_op(G.planindex, rsw(V1C6), rsw(V1C6 + 2), rsw(V1C6 + 4));
+      if (G.planindex >= 4) {
+        sar6v(V1C6, L1C0 + 12 * w);
+        const h0 = m.plane_origin_op(G.planindex, rsw(V1C6), rsw(V1C6 + 2), rsw(V1C6 + 4));
+        if ((h < -6 && h0 > 6) || (h > 6 && h0 < -6)) roofHit();
+      } else if (h <= 0) roofHit();
+    }
+    else for (let w = 0; w < 4; w++) {
       const wc2 = p.$car_whlWorldCrds2 + 6 * w;
       roofPoint(w, ea);
       cpv(V17C, V1C6);
@@ -419,7 +473,7 @@ function ups(L, st, pState, pSimd, oState, oSimd, flag) {
       p.car_speed = p.car_speed2 = p.car_speed2 >> 1;
       p.car_36MwhlAngle = p.car_angle_z = 0;
       const up = m.mat_rot_zxy(0, 0, s16(-y1()), 0);
-      for (let w = 0; w < 4; w++) { roofPoint(w, up); cpv(p.$car_whlWorldCrds2 + 6 * w, V1C6); }
+      if (!MS) for (let w = 0; w < 4; w++) { roofPoint(w, up); cpv(p.$car_whlWorldCrds2 + 6 * w, V1C6); }
     }
 
     const all = s8(p.car_sumSurfFrontWheels + p.car_sumSurfRearWheels);
@@ -495,7 +549,8 @@ export function player_op(input) {
     ps.field_CF = 1;
     if (ps.car_crashBmpFlag !== 0) {
       state.field_45D = 0;
-      input = 2; wb(DS + u16(st.bp + 6), 2);
+      input = 2;
+      if (!MS) wb(DS + u16(st.bp + 6), 2); // the argument on the stack
       if (ps.car_speed2 === 0) {
         ps.field_CF = 0;
         if (ps.car_speed === 0 && [0, 2, 4, 6].every(o => rsw(ps.$car_rc1 + o) === 0)) return;
@@ -533,8 +588,8 @@ export function player_op(input) {
           state.field_2F2 = piece;
           state.field_45C = 0;
           if (skipped > 0) {
-            G.penalty_time = s16(u16(skipped * G.framespersec) * 3);
-            G.show_penalty_counter = (G.framespersec << 2) & 0xff;
+            G.penalty_time = s16(u16(skipped * fps()) * 3);
+            G.show_penalty_counter = (fps() << 2) & 0xff;
             state.game_penalty = state.game_penalty + G.penalty_time;
           }
         }
@@ -570,7 +625,7 @@ export function player_op(input) {
         if ((was45B !== 0 && state.field_45B === 0) || !(idx === f || td01(f) === idx || td02(f) === idx)) ps.car_trackdata3_index = -1;
         else { cpv(V32, target); toCar(V32, mat, 0); ahead = rsw(V38 + 4); }
       }
-      if (ahead < 0x113) {
+      if (ahead < (MS ? 0xc8 : 0x113)) { // how close the target point must be to take the next one
         if (ps.car_trackdata3_index === -1) piece = state.field_2F2;
         else advance = true;
       }
@@ -731,7 +786,8 @@ export function sub_18D60(piece, out, idx, oppSpeed) {
   const zo = rsw((multi & 1 ? A.trackpos : A.trackcenterpos) + 2 * row);
   const xo = rsw(multi & 2 ? A.trackpos2 + 2 + 2 * col : A.trackcenterpos2 + 2 * col);
   cz = s16(cz + zo); dz = s16(dz + zo); cx = s16(cx + xo); dx = s16(dx + xo);
-  setv(out, (dx + cx) >> 1, cy === -1 ? -1 : (dy + cy) >> 1, (dz + cz) >> 1);
+  const half = MS ? v => Math.trunc(v / 2) : v => v >> 1; // Mindscape divides (toward zero)
+  setv(out, half(dx + cx), cy === -1 ? -1 : half(dy + cy), half(dz + cz));
   setv(out + 6, cx, cy, cz);
   setv(out + 12, dx, dy, dz);
   ww(out + 0x12, hasAlt);

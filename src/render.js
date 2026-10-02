@@ -10,18 +10,35 @@ import { getFile } from './files.js';
 import { addDetail, surfaceKind } from './fx.js';
 
 export const ANGLE = Math.PI * 2 / 1024;
-let palette, materialColor, materialPattern;
+
+// Tone mapping (renderer.toneMapping = CustomToneMapping): none up to 0.8, so that the original
+// palette's colours come out as they are, then highlights roll off towards white (the sun on the
+// car, the bloom). Three's own neutral curve also lowers dark colours, which the palette is full of.
+THREE.ShaderChunk.tonemapping_pars_fragment = THREE.ShaderChunk.tonemapping_pars_fragment.replace(
+  'vec3 CustomToneMapping( vec3 color ) { return color; }', `vec3 CustomToneMapping( vec3 color ) {
+  color *= toneMappingExposure;
+  float peak = max( color.r, max( color.g, color.b ) );
+  if ( peak < 0.8 ) return color;
+  float newPeak = 1.0 - 0.04 / ( peak - 0.6 );
+  color *= newPeak / peak;
+  return mix( color, vec3( newPeak ), 1.0 - 1.0 / ( 0.15 * ( peak - newPeak ) + 1.0 ) );
+}`);
+let palette, materialColor, materialMask;
 
 // Palette and material table (paint index -> palette color / pattern flag).
 export function initMaterials() {
   palette = parsePalette(parseRes(decompress(getFile('SDMAIN.PVS'))));
+  // Per material: colour, fill type (0 solid, 1 patterned, 3 invisible) and, in the list that
+  // follows, the 4x4 pixel mask a patterned one is filled through (get_a_poly_info).
   const n = (A.material_pattern_list - A.material_color_list) / 2;
-  materialColor = [], materialPattern = [];
+  materialColor = [], materialMask = [];
   for (let i = 0; i < n; i++) {
     materialColor.push(palette[rw(A.material_color_list + i * 2)]);
-    materialPattern.push(rw(A.material_pattern_list + i * 2));
+    const type = rw(A.material_pattern_list + i * 2);
+    materialMask.push(type === 0 ? SOLID : type === 1 ? rw(A.material_pattern_list + (n + i) * 2) : 0);
   }
 }
+const SOLID = 0xffff;
 export const paintColor = i => new THREE.Color(...(materialColor[i] ?? [255, 0, 255]).map(c => c / 255)).convertSRGBToLinear();
 
 // Shape files -> parsed shapes by name.
@@ -33,21 +50,55 @@ export function loadShapes(file) {
   return out;
 }
 
+// Patterned materials (gratings of the loop and the bridges, nets, the cars' lamps): the original
+// fills them through a 4x4 pixel mask, leaving holes. Here the mask (vertex attribute `pat`) is
+// laid on the polygon itself, cell units per mask pixel, and the holes are cut by alpha to
+// coverage; from afar, where the cells are smaller than a pixel, it becomes an even coverage.
+function patterned(material, cell) {
+  const prev = material.onBeforeCompile;
+  material.alphaToCoverage = true;
+  material.onBeforeCompile = (s, r) => {
+    prev?.(s, r);
+    s.uniforms.uPatCell = { value: cell };
+    s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\nattribute float pat;\nvarying float vPat;\nvarying vec3 vPatPos;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPat = pat;\nvPatPos = position;');
+    s.fragmentShader = s.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vPat;\nvarying vec3 vPatPos;\nuniform float uPatCell;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+if (vPat < 65534.5) {
+  int mask = int(vPat + 0.5);
+  vec3 n = normalize(cross(dFdx(vPatPos), dFdy(vPatPos)));
+  vec3 t = normalize(abs(n.y) < 0.99 ? cross(n, vec3(0.0, 1.0, 0.0)) : vec3(1.0, 0.0, 0.0));
+  vec2 uv = vec2(dot(vPatPos, t), dot(vPatPos, cross(n, t))) / uPatCell; // in the polygon's plane
+  // Four taps inside the pixel: cells of a pixel or two do not sparkle.
+  vec2 dx = 0.25 * dFdx(uv), dy = 0.25 * dFdy(uv);
+  float hit = 0.0, cover = 0.0;
+  for (int i = 0; i < 4; i++) {
+    ivec2 c = ivec2(floor(uv + (i < 2 ? dx : -dx) + ((i & 1) == 0 ? dy : -dy))) & 3;
+    hit += 0.25 * float((mask >> (15 - c.y * 4 - c.x)) & 1);
+  }
+  for (int i = 0; i < 16; i++) cover += float((mask >> i) & 1) / 16.0;
+  diffuseColor.a = mix(hit, cover, smoothstep(0.06, 0.2, max(fwidth(uv.x), fwidth(uv.y)))); // the mesh shows only close up
+  if (diffuseColor.a < 0.02) discard;
+}`);
+  };
+  return material;
+}
 const matBase = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide, roughness: 0.9, metalness: 0 });
 const matDecal = matBase.clone(); Object.assign(matDecal, { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -8 });
-const matGlass = matBase.clone(); Object.assign(matGlass, { transparent: true, opacity: 0.45, roughness: 0.2, depthWrite: false });
 const matTerrain = matBase.clone(); Object.assign(matTerrain, { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 });
-for (const m of [matBase, matDecal, matTerrain]) addDetail(m);
+for (const m of [matBase, matDecal, matTerrain]) { addDetail(m); patterned(m, 3); m.userData.shaderKey = 'detail'; }
 // Car bodies: same look as matBase until enhanced graphics adds a clear coat (fx.js).
-export const matCar = new THREE.MeshPhysicalMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide, roughness: 0.9, metalness: 0 });
+export const matCar = patterned(new THREE.MeshPhysicalMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide, roughness: 0.9, metalness: 0 }), 0.35);
+matCar.userData.shaderKey = 'car';
 
 // Geometry buckets: accumulate triangles (already transformed) per material kind.
 class Bucket {
-  constructor() { this.pos = []; this.col = []; this.kind = []; }
-  tri(a, b, c, color, kind = 0) {
+  constructor() { this.pos = []; this.col = []; this.kind = []; this.pat = []; }
+  tri(a, b, c, color, kind = 0, mask = SOLID) {
     this.pos.push(...a, ...b, ...c);
     for (let i = 0; i < 3; i++) this.col.push(color.r, color.g, color.b);
     this.kind.push(kind, kind, kind);
+    this.pat.push(mask, mask, mask);
   }
   mesh(material) {
     if (!this.pos.length) return null;
@@ -55,6 +106,7 @@ class Bucket {
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
     g.setAttribute('kind', new THREE.Float32BufferAttribute(this.kind, 1)); // surface kind (fx.js)
+    g.setAttribute('pat', new THREE.Float32BufferAttribute(this.pat, 1)); // fill mask (patterned)
     g.computeVertexNormals();
     const m = new THREE.Mesh(g, material);
     m.castShadow = m.receiveShadow = true;
@@ -62,16 +114,18 @@ class Bucket {
   }
 }
 export class Builder {
-  constructor() { this.base = new Bucket(); this.decal = new Bucket(); this.glass = new Bucket(); this.terrain = new Bucket(); }
+  constructor() { this.base = new Bucket(); this.decal = new Bucket(); this.terrain = new Bucket(); }
   // Adds a shape transformed by mat (THREE.Matrix4 in Three.js space), using paint slot.
   add(shape, mat, slot = 0, kind = null) {
     const v = shape.verts.map(([x, y, z]) => new THREE.Vector3(x, y, -z).applyMatrix4(mat).toArray());
     for (const p of shape.prims) {
       const paint = p.paints[slot < p.paints.length ? slot : 0];
-      const color = paintColor(paint);
-      const bucket = kind ? this[kind] : materialPattern[paint] ? this.glass : (p.flags & 2) ? this.decal : this.base;
+      const color = paintColor(paint), mask = materialMask[paint] ?? SOLID;
+      if (mask === 0) continue; // invisible
+      // Patterned polygons often lie on another (a dithered shade over a kerb): drawn as decals.
+      const bucket = kind ? this[kind] : (p.flags & 2) || mask !== SOLID ? this.decal : this.base;
       if (p.type >= 3 && p.type <= 10) {
-        for (let i = 1; i + 1 < p.idx.length; i++) bucket.tri(v[p.idx[0]], v[p.idx[i]], v[p.idx[i + 1]], color, surfaceKind(paint));
+        for (let i = 1; i + 1 < p.idx.length; i++) bucket.tri(v[p.idx[0]], v[p.idx[i]], v[p.idx[i + 1]], color, surfaceKind(paint), mask);
       } else if (p.type === 11) { // sphere: center, point on surface
         sphere(bucket, v[p.idx[0]], v[p.idx[1]], color);
       } else if (p.type === 12) { // wheel: 6 verts, two rims (center, radius point, width point)
@@ -81,7 +135,7 @@ export class Builder {
   }
   group(base = matBase) {
     const g = new THREE.Group();
-    for (const [k, m] of [['base', base], ['decal', matDecal], ['glass', matGlass], ['terrain', matTerrain]]) {
+    for (const [k, m] of [['base', base], ['decal', matDecal], ['terrain', matTerrain]]) {
       const mesh = this[k].mesh(m);
       if (mesh) g.add(mesh);
     }

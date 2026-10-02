@@ -6,6 +6,7 @@
 import { M, rw, ww, u16 } from './mem.js';
 import { call, isEnabled, setNextReturn } from './calls.js';
 import { cpu, PROCS, procPtr } from './engine.js';
+import { MS } from './version.js';
 
 // Convention: when a port runs, cpu.sp is its entry sp (pointing at the return address), as
 // when hooked from original code. JS callers get this by calling through origStack().invoke.
@@ -30,8 +31,16 @@ export function retAddr(from, to, nth) {
   return [cs, sites.filter(s => s[0] === PROCS[to])[nth][1]];
 }
 
+// The Mindscape build's frames and call sites differ, and nothing reads the residue now that
+// update_player_state's frame is cleared (engine.js), so there the stack is not reproduced:
+// writes go nowhere, calls just call, and bp = 0 tells a port its frame is not in memory.
+const nop = () => {};
+const noStack = () => ({ sp: cpu.sp, bp: 0, word: () => 0, push: nop, pop: nop, enter: nop, local: nop, localByte: nop, arg: nop, call: nop,
+  invoke: (to, nth, args) => call[to](...args) });
+
 // The original's stack as `proc` runs, from its entry sp.
 export function origStack(proc) {
+  if (MS) return noStack();
   const base = cpu.ss << 4;
   const put = (off, v) => ww(base + (off & 0xffff), v);
   const st = {

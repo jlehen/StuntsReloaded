@@ -5,7 +5,7 @@
 import { M, A, G, DS, rb, rw, rsw, rsd, ww, wd, farptrAt } from '../src/mem.js';
 import { compare, rnd, SCRATCH_OFF } from './difftest.mjs';
 import { bootWorld, gameFile, cpu, callOrig } from './oracle.mjs';
-import PROCS from '../src/procs.js';
+import { PROCS } from '../src/engine.js';
 import { enable, disable } from '../src/calls.js';
 import { CARSTATE } from '../src/structs.js';
 import { SCENARIOS, traceDiff } from './trace.mjs';
@@ -125,7 +125,7 @@ function runChecks(sc, frames, perturbed) {
   });
   bootWorld();
   const rec = sc.setup();
-  setupRace(sc.fps ?? (gameconfig.game_framespersec || 20));
+  setupRace(sc.fps);
   for (let f = 0; f < (frames ?? sc.frames ?? rec); f++) step(sc.input ? sc.input() : undefined);
   for (const a of hooks) cpu.hooks.delete(a);
 }

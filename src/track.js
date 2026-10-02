@@ -19,7 +19,8 @@
 //   startcol2/startrow2 start tile, track_angle start direction, hillFlag start on a hill,
 //   byte_45D90/byte_45E16: start tile, or the failing tile when an error is returned.
 import { M, A, G, U, DS, rb, rsb, rw, rsw, wb, ww, s8, u8, s16, u16, farptrAt, setFarptr, frame, alloca } from './mem.js';
-import { state, gameconfig } from './structs.js';
+import { state, gameconfig, fps } from './structs.js';
+import { MS } from './version.js';
 import { cpu } from './engine.js';
 import { call, provide, defineSigs } from './calls.js';
 import { PROCS } from './engine.js';
@@ -350,9 +351,9 @@ const cstr = a => { let s = ''; while (M[a]) s += String.fromCharCode(M[a++]); r
 
 // Intro: the opponent car driving around a 4-piece loop on the flat plan_memres plane.
 export function init_plantrak() {
-  call.init_game_state(0xfffd);
+  if (!MS) call.init_game_state(0xfffd); // timing globals, which the Mindscape build does not have
   state.game_inputmode = 2;
-  setFarptr(A.planptr, PROCS.seg038); // plan_memres, at seg038:0
+  setFarptr(A.planptr, PROCS.plan_memres); // in the code, at the start of its own segment
   U.startcol2 = 1; U.startrow2 = 0x1c;
   const r = U.startrow2;
   [[7, 1, r], [6, 0, r], [8, 0, r + 1], [9, 1, r + 1], [7, 1, r]].forEach(([e, c, rr], i) => {
@@ -392,56 +393,73 @@ function matMulAx(mat, v) {
 // when about to hit it from behind), keep the speed near sped's target (field_3F9 << 8), then
 // run the car physics. Crossing the start line after a lap (field_CD) ends its race.
 export function opponent_op() {
-  // Callees run at the original's depth: push bp; sub sp, 40h; push di; push si.
+  // Callees run at the original's depth: push bp; sub sp, 40h (Mindscape: 3Ah); push di; push si.
   const sp = cpu.sp;
-  cpu.sp = (sp - 0x46) & 0xffff;
+  cpu.sp = (sp - (MS ? 0x40 : 0x46)) & 0xffff;
   try { opponentOp(); } finally { cpu.sp = sp; }
 }
 function opponentOp() {
   frame(() => {
     const opp = state.opponentstate, pl = state.playerstate;
-    const [steerStep, brakeStep] = G.framespersec === 20 ? [8, 1] : [16, 2];
-    let retried = opp.car_36MwhlAngle !== 0 || state.game_inputmode === 2;
+    const [steerStep, brakeStep] = fps() === 20 ? [8, 1] : [16, 2];
     const ox = pos6(opp.car_posWorld1.lx), oy = pos6(opp.car_posWorld1.ly), oz = pos6(opp.car_posWorld1.lz);
     const px = pos6(pl.car_posWorld1.lx), py = pos6(pl.car_posWorld1.ly), pz = pos6(pl.car_posWorld1.lz);
     const w = opp.$car_vec_unk3, left = opp.$car_vec_unk5, right = opp.$car_vec_unk4;
     const v = alloca(6), rel = alloca(6), aim = alloca(6), tmp = alloca(6), target = alloca(6);
+    const rotMat = () => mat_rot_zxy(opp.car_rotate.z, opp.car_rotate.y, opp.car_rotate.x, 1);
+    // Distance to the waypoint (flat when it has no height).
+    const waypointDist = () => {
+      M.copyWithin(rel, w, w + 6);
+      if (rsw(rel + 2) === -1) return polarRadius2D(s16(rsw(rel) - ox), s16(rsw(rel + 4) - oz));
+      ww(tmp, rsw(rel) - ox); ww(tmp + 2, rsw(rel + 2) - oy); ww(tmp + 4, rsw(rel + 4) - oz);
+      return polarRadius3D(tmp);
+    };
+    // The point to steer at: the waypoint, or, with the player just ahead, halfway between the
+    // waypoint and the road edge on the other side (field_45E: which side, for the player's view).
+    // half: the builds halve differently (Broderbund shifts, Mindscape divides).
+    const pickTarget = (mat, half) => {
+      M.copyWithin(target, w, w + 6);
+      if (state.game_inputmode === 2) return;
+      ww(v, px - ox); ww(v + 2, py - oy); ww(v + 4, pz - oz);
+      mat_mul_vector(v, mat, aim);
+      const ax = rsw(aim), ay = rsw(aim + 2), az = rsw(aim + 4); // player in the opponent's frame
+      if (ay > 90 || abs16(ax) > 180 || az > 600 || az < -180) return;
+      ww(v, px - rsw(w)); ww(v + 2, rsw(w + 2) === -1 ? 0 : py - rsw(w + 2)); ww(v + 4, pz - rsw(w + 4));
+      mat_mul_vector(v, mat, tmp);
+      const edge = rsw(tmp) < 0 ? left : right;
+      ww(target, half(rsw(edge) + rsw(w)));
+      ww(target + 2, rsw(w + 2) === -1 ? -1 : half(rsw(edge + 2) + rsw(w + 2)));
+      ww(target + 4, half(rsw(edge + 4) + rsw(w + 4)));
+      if (az > -78 && !pl.car_crashBmpFlag) state.field_45E = rsw(tmp) < 0 ? 2 : 1;
+    };
     opp.field_CF = 0;
     state.field_45E = 0;
-    let mat = mat_rot_zxy(opp.car_rotate.z, opp.car_rotate.y, opp.car_rotate.x, 1);
+    let mat = MS ? 0 : rotMat();
     opp.field_CF = 1;
 
     if (opp.car_crashBmpFlag) {
       if (opp.car_speed2 === 0) opp.field_CF = 0;
+    } else if (MS) {
+      // Mindscape: one pass. A waypoint too far to the side is not skipped (Broderbund retries
+      // with the next one), and the target's height is used even when it has none (-1).
+      if (waypointDist() < 200) nextWaypoint(opp);
+      mat = rotMat();
+      pickTarget(mat, sum => Math.trunc(sum / 2));
+      ww(v, rsw(target) - ox); ww(v + 2, rsw(target + 2) - oy); ww(v + 4, rsw(target + 4) - oz);
+      mat_mul_vector(v, mat, rel);
+      let angle = polarAngle(rsw(rel), rsw(rel + 4), matMulAx(mat, v));
+      if (!opp.car_slidingFlag && abs16(angle) > 0x100) nextWaypoint(opp); // waypoint behind
+      angle = opp.car_sumSurfFrontWheels === 0 ? 0 : Math.max(-0x41, Math.min(0x41, angle));
+      const steer = opp.car_steeringAngle;
+      if (s16(angle < steer ? steer - angle : angle - steer) > steerStep) opp.car_steeringAngle = angle < steer ? steer - steerStep : steer + steerStep;
+      else opp.car_steeringAngle = angle;
     } else {
-      M.copyWithin(rel, w, w + 6);
-      let dist;
-      if (rsw(rel + 2) !== -1) {
-        ww(tmp, rsw(rel) - ox); ww(tmp + 2, rsw(rel + 2) - oy); ww(tmp + 4, rsw(rel + 4) - oz);
-        dist = polarRadius3D(tmp);
-      } else dist = polarRadius2D(s16(rsw(rel) - ox), s16(rsw(rel + 4) - oz));
-      let advance = dist < 200;
+      let retried = opp.car_36MwhlAngle !== 0 || state.game_inputmode === 2;
+      let advance = waypointDist() < 200;
       let angle;
       for (;;) {
         if (advance) nextWaypoint(opp);
-        let dodge = false;
-        if (state.game_inputmode !== 2) {
-          ww(v, px - ox); ww(v + 2, py - oy); ww(v + 4, pz - oz);
-          mat_mul_vector(v, mat, aim);
-          const ax = rsw(aim), ay = rsw(aim + 2), az = rsw(aim + 4); // player in the opponent's frame
-          if (ay <= 90 && abs16(ax) <= 180 && az <= 600 && az >= -180) {
-            // Player just ahead: aim between the waypoint and the road edge on the other side.
-            ww(v, px - rsw(w)); ww(v + 2, rsw(w + 2) === -1 ? 0 : py - rsw(w + 2)); ww(v + 4, pz - rsw(w + 4));
-            mat_mul_vector(v, mat, tmp);
-            const edge = rsw(tmp) < 0 ? left : right;
-            ww(target, (rsw(edge) + rsw(w)) >> 1);
-            ww(target + 2, rsw(w + 2) === -1 ? -1 : (rsw(edge + 2) + rsw(w + 2)) >> 1);
-            ww(target + 4, (rsw(edge + 4) + rsw(w + 4)) >> 1);
-            if (az > -78 && !pl.car_crashBmpFlag) state.field_45E = rsw(tmp) < 0 ? 2 : 1;
-            dodge = true;
-          }
-        }
-        if (!dodge) M.copyWithin(target, w, w + 6);
+        pickTarget(mat, sum => sum >> 1);
         ww(v, rsw(target) - ox);
         ww(v + 2, rsw(target + 2) === -1 ? 0 : rsw(target + 2) - oy);
         ww(v + 4, rsw(target + 4) - oz);

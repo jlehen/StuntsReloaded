@@ -6,7 +6,7 @@ import { G } from '../src/mem.js';
 
 bootWorld();
 const n = loadReplay(gameFile(process.argv[2] ?? 'DEFAULT.RPL'));
-console.log('frames', n, 'fps', gameconfig.game_framespersec, 'car', carId(gameconfig.game_playercarid), 'opponent', gameconfig.game_opponenttype);
+console.log('frames', n, 'fps', gameconfig.game_framespersec ?? 20, 'car', carId(gameconfig.game_playercarid), 'opponent', gameconfig.game_opponenttype);
 setupRace();
 console.log('start col/row', G.startcol2, G.startrow2, 'angle', G.track_angle);
 const t0 = Date.now();
